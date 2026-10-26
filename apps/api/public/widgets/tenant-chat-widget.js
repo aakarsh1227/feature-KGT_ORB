@@ -7,8 +7,9 @@
  * every tenant this platform ever provisions.
  *
  * Embed with:
- *   <script src="https://YOUR-API-HOST/widgets/tenant-chat-widget.js"
+ *   <script src="https://api.kgt.solutions/widgets/tenant-chat-widget.js"
  *           data-tenant-id="acme-a1b2c3" data-api-key="tk_..." data-bot="sales" defer></script>
+ * It talks to the host it was loaded from (see apiBase below for overrides).
  *
  * data-bot picks the bot this widget talks to, and is sent as botType on
  * every message so the API applies that bot's persona and knowledge weighting:
@@ -50,10 +51,26 @@
     }
   }
   var defaultBot = lockedBot || (currentScript.getAttribute('data-default-bot') === 'sales' ? 'sales' : 'support');
-  var apiBase =
-    currentScript.getAttribute('data-api-base') ||
-    new URL(currentScript.src, window.location.href).origin;
-  apiBase = apiBase.replace(/\/$/, '');
+  // The API: data-api-base, else window.KGTChatConfig.apiBase (for a site
+  // that sets it before loading the widget), else the host this script was
+  // served from — the API itself. A script with no src (inlined or bundled
+  // into the site's own JS) has no host to go by, so production. A local API
+  // on a site that isn't local (a dev snippet copied into production) can
+  // never be reached by a visitor, and is blocked by CSP: the script's own
+  // host, or production, instead.
+  var DEFAULT_API_BASE = 'https://api.kgt.solutions';
+  var isLocalUrl = function (u) {
+    try { return /^(localhost|127\.0\.0\.1|\[::1\])$/.test(new URL(u, window.location.href).hostname); } catch (e) { return false; }
+  };
+  var scriptOrigin = currentScript.src ? new URL(currentScript.src, window.location.href).origin : null;
+  var config = window.KGTChatConfig || {};
+  var apiBase = currentScript.getAttribute('data-api-base') || config.apiBase || scriptOrigin || DEFAULT_API_BASE;
+  if (isLocalUrl(apiBase) && !isLocalUrl(window.location.href)) {
+    var fallback = scriptOrigin && !isLocalUrl(scriptOrigin) ? scriptOrigin : DEFAULT_API_BASE;
+    console.warn('[kgt-chat-widget] ' + apiBase + ' is a local address, unreachable from this site; using ' + fallback + '. Re-copy the embed snippet from the dashboard.');
+    apiBase = fallback;
+  }
+  apiBase = String(apiBase).replace(/\/+$/, '');
 
   if (!tenantSlug || !apiKey) {
     console.error('[kgt-chat-widget] data-tenant-id and data-api-key are both required.');
@@ -65,6 +82,63 @@
   var sessionIds = {}; // botType -> sessionId, kept separate like the wizard's own test widget
   var open = false;
   var sending = false;
+
+  // --- Language (English / Hindi) -------------------------------------
+  // The widget's UI language: labels, the welcome greeting, placeholders. It
+  // is NOT what the bot answers in — the backend answers in whatever language
+  // the visitor actually typed (see engine/language.js) — but it is sent as a
+  // hint so a too-short message ("ok") still comes back in the chosen one.
+  // Remembered per browser (best-effort; private windows may throw).
+  var LANG_KEY = ns + '-lang';
+  var lang = 'en';
+  try {
+    var savedLang = window.localStorage.getItem(LANG_KEY);
+    if (savedLang === 'en' || savedLang === 'hi') lang = savedLang;
+  } catch (e) { /* storage unavailable: default to English */ }
+
+  function setLang(next) {
+    if (next !== 'en' && next !== 'hi') return;
+    lang = next;
+    try { window.localStorage.setItem(LANG_KEY, lang); } catch (e) { /* ignore */ }
+    applyStaticStrings();
+    renderTabs();
+    renderMessages();
+  }
+
+  // All visitor-facing copy, per language. Bot answers and backend-generated
+  // follow-up chips are not here — those arrive already in the right language.
+  var STRINGS = {
+    en: {
+      titleSupport: 'Support', titleSales: 'Talk to sales',
+      tabSupport: 'Support', tabSales: 'Sales',
+      placeholder: 'Ask a question…', send: 'Send', close: 'Close',
+      emptySupport: 'Need help? Ask anything — answers come from this company’s own content.',
+      emptySales: 'Questions about plans, pricing or features? Ask away — answers come from this company’s own content.',
+      langPrompt: 'Choose your language', suggested: 'Suggested questions',
+      translateToHi: 'हिंदी में देखें / Translate to Hindi',
+      translateToEn: 'Translate to English',
+      showOriginal: 'Show original', translating: 'Translating…',
+      translateFailed: 'Could not translate — please try again.',
+      errorGeneric: 'The bot could not respond.'
+    },
+    hi: {
+      titleSupport: 'सहायता', titleSales: 'सेल्स से बात करें',
+      tabSupport: 'सहायता', tabSales: 'सेल्स',
+      placeholder: 'अपना सवाल पूछें…', send: 'भेजें', close: 'बंद करें',
+      emptySupport: 'मदद चाहिए? कुछ भी पूछें — जवाब इसी कंपनी की अपनी जानकारी से आते हैं।',
+      emptySales: 'प्लान, कीमत या फ़ीचर्स के बारे में सवाल हैं? बेझिझक पूछें — जवाब इसी कंपनी की अपनी जानकारी से आते हैं।',
+      langPrompt: 'अपनी भाषा चुनें', suggested: 'सुझाए गए सवाल',
+      translateToHi: 'हिंदी में देखें / Translate to Hindi',
+      translateToEn: 'Translate to English',
+      showOriginal: 'मूल भाषा में देखें', translating: 'अनुवाद हो रहा है…',
+      translateFailed: 'अनुवाद नहीं हो सका — कृपया फिर से कोशिश करें।',
+      errorGeneric: 'बॉट जवाब नहीं दे सका।'
+    }
+  };
+  function t(key) { return (STRINGS[lang] && STRINGS[lang][key]) || STRINGS.en[key] || ''; }
+  // Which language a given reply is written in, for choosing its translate
+  // button's direction: any Devanagari means Hindi, otherwise English.
+  function textLang(text) { return /[ऀ-ॿ]/.test(String(text || '')) ? 'hi' : 'en'; }
 
   var style = document.createElement('style');
   style.textContent =
@@ -107,7 +181,30 @@
     '#' + ns + '-input:focus{border-color:#0f172a;}' +
     '#' + ns + '-send{border:none;background:#0f172a;color:#fff;font-size:13px;font-weight:600;padding:0 14px;' +
     'border-radius:8px;cursor:pointer;}' +
-    '#' + ns + '-send:disabled{opacity:.4;cursor:not-allowed;}';
+    '#' + ns + '-send:disabled{opacity:.4;cursor:not-allowed;}' +
+    // Header right side: the small EN/हिं language toggle beside the close button.
+    '#' + ns + '-head-right{display:flex;align-items:center;gap:6px;}' +
+    '#' + ns + '-lang{display:flex;gap:2px;background:#f1f5f9;border-radius:999px;padding:2px;}' +
+    '#' + ns + '-lang button{border:none;background:transparent;font-size:11px;font-weight:700;' +
+    'padding:3px 8px;border-radius:999px;cursor:pointer;color:#64748b;font-family:inherit;line-height:1.4;}' +
+    '#' + ns + '-lang button.active{background:#fff;color:#0f172a;box-shadow:0 1px 2px rgba(0,0,0,.08);}' +
+    // Prominent language picker shown on the welcome/FAQ (empty) view.
+    '#' + ns + '-body .langpick{margin:auto;display:flex;flex-direction:column;gap:10px;align-items:center;' +
+    'text-align:center;padding:0 10px;}' +
+    '#' + ns + '-body .langpick .lp-title{color:#64748b;font-size:12.5px;font-weight:600;}' +
+    '#' + ns + '-body .langpick .lp-row{display:flex;gap:8px;}' +
+    '#' + ns + '-body .langpick button{border:1px solid #cbd5e1;background:#fff;color:#0f172a;border-radius:999px;' +
+    'padding:8px 18px;font-size:13.5px;font-weight:600;cursor:pointer;font-family:inherit;}' +
+    '#' + ns + '-body .langpick button:hover{border-color:#0f172a;}' +
+    '#' + ns + '-body .langpick button.active{background:#0f172a;color:#fff;border-color:#0f172a;}' +
+    '#' + ns + '-body .langpick .lp-hint{color:#94a3b8;font-size:12px;line-height:1.4;}' +
+    // Subtle "Translate" action at the foot of each bot message bubble.
+    '#' + ns + '-body .msgfoot{margin-top:7px;padding-top:6px;border-top:1px solid rgba(15,23,42,.08);}' +
+    '#' + ns + '-body .tr-btn{border:none;background:none;color:#475569;font-size:11.5px;font-weight:600;' +
+    'cursor:pointer;padding:0;font-family:inherit;text-decoration:underline;text-underline-offset:2px;}' +
+    '#' + ns + '-body .tr-btn:hover{color:#0f172a;}' +
+    '#' + ns + '-body .tr-btn:disabled{opacity:.6;cursor:default;text-decoration:none;}' +
+    '#' + ns + '-body .tr-err{color:#b91c1c;font-size:11px;margin-top:4px;}';
   document.head.appendChild(style);
 
   var launcher = document.createElement('button');
@@ -122,17 +219,23 @@
   panel.innerHTML =
     '<div id="' + ns + '-head">' +
     (lockedBot
-      ? '<div id="' + ns + '-title">' + (lockedBot === 'sales' ? 'Talk to sales' : 'Support') + '</div>'
+      ? '<div id="' + ns + '-title"></div>'
       : '<div id="' + ns + '-tabs">' +
-        '<button type="button" data-bot="support">Support</button>' +
-        '<button type="button" data-bot="sales">Sales</button>' +
+        '<button type="button" data-bot="support"></button>' +
+        '<button type="button" data-bot="sales"></button>' +
         '</div>') +
-    '<button type="button" id="' + ns + '-close" aria-label="Close">×</button>' +
+    '<div id="' + ns + '-head-right">' +
+    '<div id="' + ns + '-lang" role="group" aria-label="Language">' +
+    '<button type="button" data-lang="en">EN</button>' +
+    '<button type="button" data-lang="hi">हिं</button>' +
+    '</div>' +
+    '<button type="button" id="' + ns + '-close">×</button>' +
+    '</div>' +
     '</div>' +
     '<div id="' + ns + '-body"></div>' +
     '<form id="' + ns + '-form">' +
-    '<input id="' + ns + '-input" type="text" placeholder="Ask a question…" autocomplete="off" />' +
-    '<button id="' + ns + '-send" type="submit">Send</button>' +
+    '<input id="' + ns + '-input" type="text" autocomplete="off" />' +
+    '<button id="' + ns + '-send" type="submit"></button>' +
     '</form>';
 
   var byBotMessages = { support: [], sales: [] };
@@ -140,7 +243,26 @@
   function renderTabs() {
     var buttons = panel.querySelectorAll('#' + ns + '-tabs button');
     for (var i = 0; i < buttons.length; i++) {
-      buttons[i].className = buttons[i].getAttribute('data-bot') === botType ? 'active' : '';
+      var bot = buttons[i].getAttribute('data-bot');
+      buttons[i].className = bot === botType ? 'active' : '';
+      buttons[i].textContent = t(bot === 'sales' ? 'tabSales' : 'tabSupport');
+    }
+  }
+
+  // Fills every fixed UI label from the current language and marks the active
+  // language pill. Called on mount and whenever the language changes.
+  function applyStaticStrings() {
+    var title = panel.querySelector('#' + ns + '-title');
+    if (title) title.textContent = t(lockedBot === 'sales' ? 'titleSales' : 'titleSupport');
+    var input = panel.querySelector('#' + ns + '-input');
+    if (input) input.setAttribute('placeholder', t('placeholder'));
+    var send = panel.querySelector('#' + ns + '-send');
+    if (send) send.textContent = t('send');
+    var close = panel.querySelector('#' + ns + '-close');
+    if (close) close.setAttribute('aria-label', t('close'));
+    var langButtons = panel.querySelectorAll('#' + ns + '-lang button');
+    for (var i = 0; i < langButtons.length; i++) {
+      langButtons[i].className = langButtons[i].getAttribute('data-lang') === lang ? 'active' : '';
     }
   }
 
@@ -148,21 +270,23 @@
     var body = panel.querySelector('#' + ns + '-body');
     var msgs = byBotMessages[botType];
     body.innerHTML = '';
+    // Welcome / FAQ view: a prominent language picker above the greeting, so
+    // the first thing a visitor can do is choose English or हिंदी.
     if (!msgs.length) {
-      var empty = document.createElement('div');
-      empty.className = 'empty';
-      empty.textContent = botType === 'sales'
-        ? 'Questions about plans, pricing or features? Ask away — answers come from this company’s own content.'
-        : 'Need help? Ask anything — answers come from this company’s own content.';
-      body.appendChild(empty);
+      body.appendChild(buildLangPicker());
       return;
     }
     for (var i = 0; i < msgs.length; i++) {
       var m = msgs[i];
       var el = document.createElement('div');
       el.className = 'msg ' + (m.role === 'user' ? 'user' : m.error ? 'err' : 'bot');
-      if (m.role === 'assistant' && !m.error) renderRichText(el, m.text);
-      else el.textContent = m.text;
+      if (m.role === 'assistant' && !m.error) {
+        var showTranslated = m.showing === 'translated' && m.translated;
+        renderRichText(el, showTranslated ? m.translated.text : m.text);
+        el.appendChild(buildTranslateFooter(m));
+      } else {
+        el.textContent = m.text;
+      }
       body.appendChild(el);
     }
     // Suggested follow-ups under the latest reply only; clicking one asks it.
@@ -170,7 +294,7 @@
     if (!sending && last.role === 'assistant' && !last.error && last.followUps && last.followUps.length) {
       var chips = document.createElement('div');
       chips.className = 'chips';
-      chips.setAttribute('aria-label', 'Suggested questions');
+      chips.setAttribute('aria-label', t('suggested'));
       for (var j = 0; j < last.followUps.length; j++) {
         var chip = document.createElement('button');
         chip.type = 'button';
@@ -182,6 +306,95 @@
       body.appendChild(chips);
     }
     body.scrollTop = body.scrollHeight;
+  }
+
+  // The welcome/FAQ view's language picker: a label, the two language buttons
+  // (active one highlighted), and the current bot's localized greeting below.
+  function buildLangPicker() {
+    var wrap = document.createElement('div');
+    wrap.className = 'langpick';
+
+    var title = document.createElement('div');
+    title.className = 'lp-title';
+    title.textContent = t('langPrompt');
+    wrap.appendChild(title);
+
+    var row = document.createElement('div');
+    row.className = 'lp-row';
+    [['en', 'English'], ['hi', 'हिंदी']].forEach(function (pair) {
+      var b = document.createElement('button');
+      b.type = 'button';
+      b.textContent = pair[1];
+      if (lang === pair[0]) b.className = 'active';
+      b.addEventListener('click', function () { setLang(pair[0]); });
+      row.appendChild(b);
+    });
+    wrap.appendChild(row);
+
+    var hint = document.createElement('div');
+    hint.className = 'lp-hint';
+    hint.textContent = t(botType === 'sales' ? 'emptySales' : 'emptySupport');
+    wrap.appendChild(hint);
+    return wrap;
+  }
+
+  // The subtle translate action at the foot of a bot bubble. Its direction
+  // follows the message's OWN language, not the UI language: a Hindi reply
+  // offers "Translate to English", an English reply offers Hindi. Once
+  // translated it toggles between the translation and the original without
+  // re-fetching (the translation is cached on the message).
+  function buildTranslateFooter(m) {
+    var foot = document.createElement('div');
+    foot.className = 'msgfoot';
+
+    var btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'tr-btn';
+    if (m.translating) {
+      btn.textContent = t('translating');
+      btn.disabled = true;
+    } else if (m.showing === 'translated' && m.translated) {
+      btn.textContent = t('showOriginal');
+    } else {
+      btn.textContent = textLang(m.text) === 'hi' ? t('translateToEn') : t('translateToHi');
+    }
+    btn.addEventListener('click', function () { toggleTranslation(m); });
+    foot.appendChild(btn);
+
+    if (m.translateError) {
+      var err = document.createElement('div');
+      err.className = 'tr-err';
+      err.textContent = t('translateFailed');
+      foot.appendChild(err);
+    }
+    return foot;
+  }
+
+  // Show/hide a message's translation, fetching it once on first use. Keeps
+  // the chat session untouched: it calls the stateless /translate endpoint,
+  // not /chat, so no session, turn or follow-up is affected.
+  function toggleTranslation(m) {
+    if (m.translating) return;
+    m.translateError = false;
+    if (m.showing === 'translated') { m.showing = 'original'; renderMessages(); return; }
+    if (m.translated) { m.showing = 'translated'; renderMessages(); return; }
+
+    var target = textLang(m.text) === 'hi' ? 'en' : 'hi';
+    m.translating = true;
+    renderMessages();
+    fetch(apiBase + '/api/v1/tenant-chat/' + encodeURIComponent(tenantSlug) + '/translate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-tenant-api-key': apiKey },
+      body: JSON.stringify({ text: m.text, target: target })
+    })
+      .then(function (res) { return res.json().then(function (data) { return { ok: res.ok, data: data }; }); })
+      .then(function (result) {
+        if (!result.ok || !result.data || !result.data.text) throw new Error('translate failed');
+        m.translated = { text: result.data.text, lang: result.data.target || target };
+        m.showing = 'translated';
+      })
+      .catch(function () { m.translateError = true; })
+      .finally(function () { m.translating = false; renderMessages(); });
   }
 
   // Bot replies use a small formatting subset (engine/promptBuilder.js "HOW
@@ -248,11 +461,18 @@
   panel.querySelector('#' + ns + '-close').addEventListener('click', function () { setOpen(false); });
 
   var tabButtons = panel.querySelectorAll('#' + ns + '-tabs button');
-  for (var t = 0; t < tabButtons.length; t++) {
-    tabButtons[t].addEventListener('click', function (e) {
+  for (var ti = 0; ti < tabButtons.length; ti++) {
+    tabButtons[ti].addEventListener('click', function (e) {
       botType = e.currentTarget.getAttribute('data-bot');
       renderTabs();
       renderMessages();
+    });
+  }
+
+  var langButtons = panel.querySelectorAll('#' + ns + '-lang button');
+  for (var li = 0; li < langButtons.length; li++) {
+    langButtons[li].addEventListener('click', function (e) {
+      setLang(e.currentTarget.getAttribute('data-lang'));
     });
   }
 
@@ -278,13 +498,16 @@
     fetch(apiBase + '/api/v1/tenant-chat/' + encodeURIComponent(tenantSlug) + '/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'x-tenant-api-key': apiKey },
-      body: JSON.stringify({ query: query, botType: sentBot, sessionId: sessionIds[sentBot] })
+      // language: the UI's selected language, a hint only — the backend
+      // answers in whatever language this message is actually written in, and
+      // falls back to this when the message is too short to tell.
+      body: JSON.stringify({ query: query, botType: sentBot, sessionId: sessionIds[sentBot], language: lang })
     })
       .then(function (res) {
         return res.json().then(function (data) { return { ok: res.ok, data: data }; });
       })
       .then(function (result) {
-        if (!result.ok) throw new Error(result.data && result.data.error ? result.data.error : 'The bot could not respond.');
+        if (!result.ok) throw new Error(result.data && result.data.error ? result.data.error : t('errorGeneric'));
         sessionIds[sentBot] = result.data.sessionId;
         byBotMessages[sentBot].push({ role: 'assistant', text: result.data.answer, followUps: result.data.followUps || [] });
       })
@@ -321,6 +544,7 @@
   function mount() {
     document.body.appendChild(panel);
     document.body.appendChild(launcher);
+    applyStaticStrings();
     renderTabs();
   }
 

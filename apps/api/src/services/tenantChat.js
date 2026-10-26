@@ -1,5 +1,7 @@
 const prisma = require('../lib/prisma');
 const { getEngineAnswer } = require('../engine/chatEngine');
+const llmClient = require('../engine/llmClient'); // called through the module so a test's mock is used
+const { resolveLanguage, normalizeLanguage, translationSystemPrompt } = require('../engine/language');
 const { createTenantSupportProfile, createTenantSalesProfile } = require('../domains/tenantProfile');
 const { createIpRateLimiter } = require('../utils/ipRateLimit');
 const { pickFollowUps } = require('./followUps');
@@ -17,6 +19,9 @@ const { extractStatedEmail } = require('../domains/handoffActions');
 
 const BOT_PROFILE_FACTORIES = { support: createTenantSupportProfile, sales: createTenantSalesProfile };
 const MAX_QUERY_LEN = 1000;
+// A bot answer can be several paragraphs, so the text sent to /translate is
+// allowed to be longer than a visitor's query.
+const MAX_TRANSLATE_LEN = 4000;
 
 // Per tenant, not per IP: bounds each tenant's LLM spend however many
 // visitors its widget has. The limiter keys by any string.
@@ -76,6 +81,13 @@ async function runTenantChat({ tenant, body, sandbox = false }) {
   if (!bot.ok) throw new ChatRequestError(bot.error, 400);
   const botType = bot.value;
 
+  // Which language the bot must answer in. The message itself decides — a
+  // Hindi question gets a Hindi answer, an English one an English answer —
+  // and the widget's selected language (body.language) is only a fallback for
+  // a message too short to tell (engine/language.js). Echoed back in the
+  // response so the widget knows which language this turn came out in.
+  const language = resolveLanguage(body?.language, query);
+
   if (await isTenantRateLimited(tenant.id)) {
     throw new ChatRequestError('Too many chat requests. Please wait a few minutes and try again.', 429);
   }
@@ -102,7 +114,8 @@ async function runTenantChat({ tenant, body, sandbox = false }) {
     ctx: {
       tenantId: tenant.id,
       sessionId: session.id, // tickets and an email left later are tied to this conversation
-      recentTurns: recentTurns.reverse().map((m) => ({ role: m.role, content: m.content }))
+      recentTurns: recentTurns.reverse().map((m) => ({ role: m.role, content: m.content })),
+      language // pins the reply language (engine/promptBuilder.js)
     }
   });
 
@@ -147,7 +160,40 @@ async function runTenantChat({ tenant, body, sandbox = false }) {
     query,
     answer: reply.answer
   });
-  return { ...reply, followUps, sessionId: session.id, botType };
+  return { ...reply, followUps, sessionId: session.id, botType, language };
+}
+
+/**
+ * Translate one already-written message into English or Hindi, for the
+ * per-message "Translate" button in the widget. Deliberately stateless: it
+ * runs no retrieval, loads no persona, writes no ChatMessage and touches no
+ * session — so translating a reply never disturbs the ongoing conversation.
+ * Shares the chat rate limiter so it can't be used to bypass the LLM budget.
+ * @param {{ tenant: object, body: object }} args  body: { text, target: "en" | "hi" }
+ * @returns {Promise<{ text: string, target: string }>}
+ * @throws {ChatRequestError} invalid input (400), rate limiting (429) or LLM unavailable (503)
+ */
+async function runTranslate({ tenant, body }) {
+  const text = String(body?.text || '').trim();
+  if (!text) throw new ChatRequestError('text is required', 400);
+  if (text.length > MAX_TRANSLATE_LEN) {
+    throw new ChatRequestError(`text must be ${MAX_TRANSLATE_LEN} characters or fewer`, 400);
+  }
+  const target = normalizeLanguage(body?.target);
+  if (!target) throw new ChatRequestError('target must be one of: en, hi', 400);
+
+  if (await isTenantRateLimited(tenant.id)) {
+    throw new ChatRequestError('Too many requests. Please wait a few minutes and try again.', 429);
+  }
+
+  try {
+    const answer = await llmClient.generateAnswer({ systemPrompt: translationSystemPrompt(target), userPrompt: text });
+    return { text: answer.text.trim(), target };
+  } catch (err) {
+    // Same provider-chain failures the chat engine degrades on — surface a
+    // polite, retryable message rather than a raw upstream error.
+    throw new ChatRequestError('Translation is unavailable right now. Please try again in a few minutes.', 503);
+  }
 }
 
 // Express helper: run a turn and map input errors to their status codes.
@@ -161,4 +207,24 @@ async function handleChat(req, res, next) {
   }
 }
 
-module.exports = { runTenantChat, handleChat, parseBotType, ChatRequestError, MAX_QUERY_LEN, BOT_TYPES };
+// Express helper: translate one message, mapping input errors to status codes.
+async function handleTranslate(req, res, next) {
+  try {
+    res.json(await runTranslate({ tenant: req.tenant, body: req.body }));
+  } catch (err) {
+    if (err instanceof ChatRequestError) return res.status(err.statusCode).json({ error: err.message });
+    next(err);
+  }
+}
+
+module.exports = {
+  runTenantChat,
+  handleChat,
+  runTranslate,
+  handleTranslate,
+  parseBotType,
+  ChatRequestError,
+  MAX_QUERY_LEN,
+  MAX_TRANSLATE_LEN,
+  BOT_TYPES
+};

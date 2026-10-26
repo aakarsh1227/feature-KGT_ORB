@@ -124,7 +124,7 @@ async function getEngineAnswer({ profile, query, ctx = {} }) {
     } else {
       const answer = await generateAnswer({
         systemPrompt: buildSystemPrompt(profile, ctx),
-        userPrompt: buildUserPrompt(profile, query, ranked)
+        userPrompt: buildUserPrompt(profile, query, ranked, ctx)
       });
       text = answer.text;
       if (profile.usageTracking) {
