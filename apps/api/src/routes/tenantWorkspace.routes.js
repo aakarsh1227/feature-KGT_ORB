@@ -9,7 +9,7 @@ const { pdfToDocuments, PdfIngestError } = require('../services/shared/pdfIngest
 const { parseCategory, suggestCategory } = require('../services/shared/documentCategory');
 const { crawlConsentRecord, hostOf } = require('../services/shared/crawlConsent');
 const { createIpRateLimiter } = require('../utils/ipRateLimit');
-const { handleChat } = require('../services/tenantChat');
+const { handleChat, handleTranslate } = require('../services/tenantChat');
 const { scheduleFaqGeneration, isFaqGenerationRunning } = require('../services/tenantFaqs');
 const { usageBreakdowns } = require('../services/usageStats');
 const { wrapRouterAsync } = require('../utils/wrapAsync');
@@ -428,6 +428,11 @@ router.delete('/api-keys/:keyId', async (req, res) => {
 // ── Test chat: the tenant's own bots, authenticated by the session instead
 // of an API key (keys are stored hashed and can't be read back).
 router.post('/chat', handleChat);
+
+// Per-message translation for the Test bots chat, mirroring the embed
+// widget's translate button. Stateless (services/tenantChat.js runTranslate):
+// no session touched, so translating a reply never resets the test chat.
+router.post('/translate', handleTranslate);
 
 // ── Tickets and usage
 

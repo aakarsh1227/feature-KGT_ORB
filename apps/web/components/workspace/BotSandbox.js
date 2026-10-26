@@ -22,6 +22,11 @@ const BOTS = [
 const FAQ_POLL_MS = 4000;
 const FAQ_POLL_MAX = 30; // ~2 minutes, then settle for the generic starters
 
+const LANGUAGES = [{ value: 'en', label: 'English' }, { value: 'hi', label: 'हिंदी' }];
+// Hindi if the reply contains any Devanagari, else English — decides which way
+// a message's Translate button points (mirrors the embed widget).
+const textLang = (text) => (/[ऀ-ॿ]/.test(String(text || '')) ? 'hi' : 'en');
+
 // Loads the tenant's starter FAQs, polling while the API reports "pending".
 function useStarterFaqs(ws) {
   const [faqs, setFaqs] = useState(null);
@@ -81,6 +86,11 @@ export default function BotSandbox({ ws, tenant }) {
   const [sessions, setSessions] = useState({});
   const [pending, setPending] = useState({ support: false, sales: false });
   const [input, setInput] = useState('');
+  // UI/preview language. Sent as `language` on every chat request so the
+  // engine can match it when a message is too short to tell on its own; the
+  // reply still follows whatever language the message is actually written in
+  // (apps/api/src/engine/language.js).
+  const [lang, setLang] = useState('en');
   const inputRef = useRef(null);
   const { faqs, generating, regenerate } = useStarterFaqs(ws);
 
@@ -88,7 +98,7 @@ export default function BotSandbox({ ws, tenant }) {
     setThreads((t) => ({ ...t, [bot]: [...t[bot], { role: 'user', text: query }] }));
     setPending((p) => ({ ...p, [bot]: true }));
     try {
-      const data = await ws.chat({ query, botType: bot, sessionId: sessions[bot] });
+      const data = await ws.chat({ query, botType: bot, sessionId: sessions[bot], language: lang });
       setSessions((s) => ({ ...s, [bot]: data.sessionId }));
       setThreads((t) => ({ ...t, [bot]: [...t[bot], { role: 'bot', text: data.answer, meta: data }] }));
     } catch (err) {
@@ -96,6 +106,27 @@ export default function BotSandbox({ ws, tenant }) {
     } finally {
       setPending((p) => ({ ...p, [bot]: false }));
     }
+  };
+
+  // Translate one bot reply inline. Toggles against the cached original once
+  // fetched; uses the stateless /translate endpoint, so the chat session is
+  // never reset. Updates only the one message, by (bot, index).
+  const translate = (bot, index) => {
+    const current = threads[bot]?.[index];
+    if (!current || current.role !== 'bot' || current.error || current.translating) return;
+    const setMsg = (patch) => setThreads((t) => ({
+      ...t,
+      [bot]: t[bot].map((x, i) => (i === index ? { ...x, ...(typeof patch === 'function' ? patch(x) : patch) } : x))
+    }));
+    if (current.translated) { // already fetched — just flip which text shows
+      setMsg((x) => ({ showing: x.showing === 'translated' ? 'original' : 'translated' }));
+      return;
+    }
+    const target = textLang(current.text) === 'hi' ? 'en' : 'hi';
+    setMsg({ translating: true, translateError: false });
+    ws.translate(current.text, target)
+      .then((data) => setMsg({ translating: false, translated: { text: data.text, target: data.target || target }, showing: 'translated' }))
+      .catch(() => setMsg({ translating: false, translateError: true }));
   };
 
   const send = (text) => {
@@ -114,8 +145,11 @@ export default function BotSandbox({ ws, tenant }) {
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <Segmented label="View" value={view} onChange={setView}
-          options={[{ value: 'chat', label: single ? 'Test chat' : 'Compare answers' }, { value: 'knowledge', label: single ? 'Knowledge' : 'Knowledge split' }]} />
+        <div className="flex flex-wrap items-center gap-3">
+          <Segmented label="View" value={view} onChange={setView}
+            options={[{ value: 'chat', label: single ? 'Test chat' : 'Compare answers' }, { value: 'knowledge', label: single ? 'Knowledge' : 'Knowledge split' }]} />
+          {view === 'chat' && <Segmented label="Language" value={lang} onChange={setLang} options={LANGUAGES} />}
+        </div>
         <p className="text-xs text-fg-3">
           {view === 'chat'
             ? (single ? `Only your ${deployed[0] === 'sales' ? 'Sales' : 'Support'} Bot is deployed — switch on the Overview page.`
@@ -131,7 +165,7 @@ export default function BotSandbox({ ws, tenant }) {
             <BotPane key={bot.id} bot={bot} tenant={tenant} thread={threads[bot.id]} pending={pending[bot.id]}
               starters={tailored.length ? tailored : bot.starters} tailored={tailored.length > 0} generating={generating}
               dimmed={target !== 'both' && target !== bot.id} onStarter={(s) => { setTarget(bot.id); ask(bot.id, s); }}
-              onFollowUp={(q) => ask(bot.id, q)} />
+              onFollowUp={(q) => ask(bot.id, q)} lang={lang} onTranslate={(i) => translate(bot.id, i)} />
           );
         })}
       </div>
@@ -164,7 +198,7 @@ export default function BotSandbox({ ws, tenant }) {
   );
 }
 
-function BotPane({ bot, tenant, thread, pending, starters, tailored, generating, dimmed, onStarter, onFollowUp }) {
+function BotPane({ bot, tenant, thread, pending, starters, tailored, generating, dimmed, onStarter, onFollowUp, lang, onTranslate }) {
   const scrollRef = useRef(null);
   useEffect(() => { scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' }); }, [thread, pending]);
   const Icon = bot.icon;
@@ -219,8 +253,10 @@ function BotPane({ bot, tenant, thread, pending, starters, tailored, generating,
             <div key={i} className="max-w-[92%]">
               <div className={cx('rounded-2xl rounded-bl-md border px-3.5 py-2.5 text-sm leading-relaxed',
                 m.error ? 'whitespace-pre-wrap border-rose-400/25 bg-rose-500/10 text-rose-100' : 'border-white/[0.08] bg-panel-2/80 text-fg')}>
-                {m.error ? m.text : <ChatText text={m.text} />}
+                {m.error ? m.text : <ChatText text={m.showing === 'translated' && m.translated ? m.translated.text : m.text} />}
               </div>
+              {/* Translate action at the foot of every (non-error) bot bubble. */}
+              {!m.error && <TranslateToggle m={m} lang={lang} onToggle={() => onTranslate(i)} />}
               {/* Chips only under the latest reply, and not while the next one is on its way. */}
               {i === thread.length - 1 && !pending && (
                 <FollowUpChips questions={m.meta?.followUps} tone={bot.tone} onPick={onFollowUp} />
@@ -281,6 +317,26 @@ function KnowledgeSplit({ data, deployed }) {
           </Card>
         );
       })}
+    </div>
+  );
+}
+
+// The inline Translate action under each bot reply, mirroring the embed
+// widget. Its direction follows the message's own language: a Hindi reply
+// offers "Translate to English", an English reply "हिंदी में देखें /
+// Translate to Hindi". Once fetched it toggles against the original.
+function TranslateToggle({ m, lang, onToggle }) {
+  let label;
+  if (m.translating) label = lang === 'hi' ? 'अनुवाद हो रहा है…' : 'Translating…';
+  else if (m.showing === 'translated' && m.translated) label = lang === 'hi' ? 'मूल भाषा में देखें' : 'Show original';
+  else label = textLang(m.text) === 'hi' ? 'Translate to English' : 'हिंदी में देखें / Translate to Hindi';
+  return (
+    <div className="mt-1.5 flex items-center gap-2 pl-1">
+      <button type="button" onClick={onToggle} disabled={m.translating}
+        className="text-[11.5px] text-fg-3 underline-offset-2 transition hover:text-fg hover:underline disabled:cursor-not-allowed disabled:no-underline disabled:opacity-60">
+        {label}
+      </button>
+      {m.translateError && <span className="text-[11px] text-rose-300">{lang === 'hi' ? 'अनुवाद नहीं हो सका' : 'Could not translate'}</span>}
     </div>
   );
 }

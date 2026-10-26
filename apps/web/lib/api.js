@@ -152,6 +152,9 @@ function workspace(base, auth) {
     createApiKey: (label) => r('/api-keys', { method: 'POST', body: { label } }),
     revokeApiKey: (keyId, { force = false } = {}) => r(`/api-keys/${enc(keyId)}${force ? '?force=true' : ''}`, { method: 'DELETE' }),
     chat: (payload) => r('/chat', { method: 'POST', body: payload }),
+    // Translate one message into 'en' or 'hi' -> { text, target }. Stateless:
+    // it touches no session, so translating a reply never resets the chat.
+    translate: (text, target) => r('/translate', { method: 'POST', body: { text, target } }),
     // Starter questions written from this tenant's documents: { status, supportFaqs, salesFaqs, generatedAt }
     getFaqs: () => r('/faqs'),
     regenerateFaqs: () => r('/faqs/regenerate', { method: 'POST' }),
