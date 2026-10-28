@@ -12,6 +12,7 @@ const { signClientToken } = require('../middleware/clientAuth');
 const { crawlConsentRecord, hostOf } = require('../services/shared/crawlConsent');
 const { scheduleFaqGeneration } = require('../services/tenantFaqs');
 const { parseBotScope, parseBotPreference } = require('../services/shared/botScope');
+const { parseBusinessCategory } = require('../services/shared/businessCategory');
 const { claimVerification, ACCOUNT_EXISTS } = require('../services/verificationService');
 const { maskAddress } = require('../services/mailer');
 const { ingestUpload, FileIngestError, MAX_UPLOAD_BYTES } = require('../services/shared/fileIngest');
@@ -275,6 +276,8 @@ router.post('/complete', async (req, res) => {
   const rawPages = Array.isArray(req.body?.pages) ? req.body.pages : [];
   const botPreference = parseBotPreference(req.body?.botPreference); // support | sales | both (default)
   if (!botPreference.ok) return refuse(400, { error: botPreference.error });
+  const businessCategory = parseBusinessCategory(req.body?.businessCategory); // ecommerce | saas | ... | null
+  if (!businessCategory.ok) return refuse(400, { error: businessCategory.error });
 
   if (!companyName) return refuse(400, { error: 'companyName is required' });
   if (!isValidEmail(email)) return refuse(400, { error: 'A valid business email is required' });
@@ -310,7 +313,7 @@ router.post('/complete', async (req, res) => {
       // created, and one verification creates one account.
       if (!(await claimVerification(tx, email, req.body?.emailVerificationToken))) throw new UnverifiedEmail();
       const tenant = await tx.tenant.create({
-        data: { name: companyName, slug: makeSlug(companyName), industryLabel, signupEmail: email, botPreference: botPreference.value }
+        data: { name: companyName, slug: makeSlug(companyName), industryLabel, signupEmail: email, botPreference: botPreference.value, businessCategory: businessCategory.value }
       });
       const { key } = await issueApiKey(tx, tenant.id, 'Website widget');
       await tx.tenantDocument.createMany({ data: pages.map((p) => ({ tenantId: tenant.id, ...p })) });

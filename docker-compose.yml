@@ -143,7 +143,11 @@ services:
     build:
       context: ./apps/web
       args:
-        NEXT_PUBLIC_API_URL: ${PUBLIC_API_URL:-http://localhost:4100}
+        # The public API URL, compiled into the browser bundle and the embed
+        # snippets (rebuild to change it). PUBLIC_API_URL, or NEXT_PUBLIC_API_URL
+        # as some env files name it; production when neither is set. Compose
+        # reads these from --env-file .env.docker (or the shell), not env_file.
+        NEXT_PUBLIC_API_URL: ${PUBLIC_API_URL:-${NEXT_PUBLIC_API_URL:-https://api.kgt.solutions}}
     container_name: kgt-ai-hub-web
     ports:
       - "${WEB_PORT:-3100}:3001"

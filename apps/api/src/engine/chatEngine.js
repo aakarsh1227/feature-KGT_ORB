@@ -11,6 +11,7 @@
 
 const { loadKnowledgeBase } = require('./knowledgeLoader');
 const { retrieve } = require('./retriever');
+const { translateQueryForRetrieval } = require('./queryTranslation');
 const { buildSystemPrompt, buildUserPrompt, parseCitedExcerpt, normalizeChatText } = require('./promptBuilder');
 const { tryActions } = require('./actionRegistry');
 const { computeConfidence } = require('./confidence');
@@ -67,11 +68,17 @@ async function getEngineAnswer({ profile, query, ctx = {} }) {
     ? await profile.resolveKnowledge(ctx)
     : loadKnowledgeBase(profile.knowledgeBasePath);
   const chunks = profile.filterChunks ? profile.filterChunks(allChunks, ctx) : allChunks;
-  const ranked = retrieve(query, chunks, {
+  // Cross-lingual retrieval: a Hindi (Devanagari) question is translated to
+  // English for the lexical layer, which only knows the English documents
+  // (engine/queryTranslation.js). The prompt below still gets the original
+  // `query`, so the model answers the real question in the selected language.
+  // A no-op for English/romanized queries and if translation is unavailable.
+  const retrievalQuery = await translateQueryForRetrieval(query);
+  const ranked = retrieve(retrievalQuery, chunks, {
     topK: profile.topK,
     minScore: profile.minScore,
-    boostTags: profile.boostTags?.(ctx, query),
-    chunkWeight: profile.chunkWeight ? (chunk) => profile.chunkWeight(chunk, ctx, query) : undefined,
+    boostTags: profile.boostTags?.(ctx, retrievalQuery),
+    chunkWeight: profile.chunkWeight ? (chunk) => profile.chunkWeight(chunk, ctx, retrievalQuery) : undefined,
     relativeMinScore: profile.relativeMinScore
   });
 
@@ -83,7 +90,7 @@ async function getEngineAnswer({ profile, query, ctx = {} }) {
   // be able to lift a weak match over the anti-hallucination gate (or sink
   // a strong one under it).
   const topRawScore = ranked.length ? Math.max(...ranked.map((r) => r.rawScore ?? r.score)) : 0;
-  const confidence = ranked.length ? computeConfidence(query, topRawScore) : 0;
+  const confidence = ranked.length ? computeConfidence(retrievalQuery, topRawScore) : 0;
   // At or above the threshold is a pass: 0.30 exactly goes to the model.
   const gateFailed = !ranked.length || (profile.minConfidence != null && confidence < profile.minConfidence);
   // A handoff (fallback reply + ticket) happens only below this threshold.
@@ -113,7 +120,7 @@ async function getEngineAnswer({ profile, query, ctx = {} }) {
   //    Only reached after the gate, so a cached answer is re-used exactly
   //    where a fresh one would have been generated; the formatting, ticketing
   //    and onResult steps below run the same either way.
-  const cached = cacheable ? answerCache.get(ctx.tenantId, profile.botType, query, knowledgeGeneration) : null;
+  const cached = cacheable ? answerCache.get(ctx.tenantId, profile.botType, query, knowledgeGeneration, ctx.language) : null;
   try {
     let text;
     if (cached?.value) {
@@ -132,7 +139,7 @@ async function getEngineAnswer({ profile, query, ctx = {} }) {
       }
       if (cacheable) {
         await answerCache.set(ctx.tenantId, profile.botType, query,
-          { text, model: answer.model, usage: answer.usage }, knowledgeGeneration);
+          { text, model: answer.model, usage: answer.usage }, knowledgeGeneration, ctx.language);
       }
     }
 

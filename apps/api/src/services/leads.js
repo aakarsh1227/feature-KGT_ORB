@@ -186,6 +186,7 @@ async function sendConfirmation({ tenant, lead }) {
     kind: 'visitor confirmation email', tenant, lead,
     send: () => sendMail({
       to: lead.email, ...mail, label: `visitor confirmation, lead ${lead.id}`,
+      tenantId: tenant.id, // send from the tenant's own SMTP when they have one (services/mailer.js)
       devSummary: `(lead confirmation, ${lead.botType} bot, tenant ${tenant.slug}, ${recap.length} recapped answer${recap.length === 1 ? '' : 's'})`
     })
   });

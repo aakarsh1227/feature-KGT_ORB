@@ -1,4 +1,10 @@
-export const BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4100';
+// The API for every browser call and every embed snippet the dashboard hands
+// out, compiled into the bundle at build time (NEXT_PUBLIC_API_URL; Docker
+// sets it from PUBLIC_API_URL). A production build without it points at the
+// production API, never at a localhost no visitor's browser can reach;
+// `npm run dev` keeps the local one.
+const DEFAULT_API_URL = process.env.NODE_ENV === 'production' ? 'https://api.kgt.solutions' : 'http://localhost:4100';
+export const BASE_URL = (process.env.NEXT_PUBLIC_API_URL || DEFAULT_API_URL).replace(/\/+$/, '');
 
 // Two separate sessions, stored under separate keys:
 //   operator — KGT staff, /admin pages   (typ "operator" JWT)
@@ -148,13 +154,27 @@ function workspace(base, auth) {
       return requestMultipart(`${base}/documents/file`, formData, auth);
     },
     importWebsite: (url, { authorized } = {}) => r('/scrape', { method: 'POST', body: { url, authorized: authorized === true } }),
+    // Product catalog: structured rows + counts. Upload is multipart CSV.
+    getCatalog: () => r('/catalog'),
+    uploadCatalog: (file) => {
+      const formData = new FormData();
+      formData.append('file', file);
+      return requestMultipart(`${base}/catalog`, formData, auth);
+    },
+    // Per-item catalog CRUD (name, sku, price, description, category, imageUrl).
+    listProducts: () => r('/catalog/products'),
+    addProduct: (product) => r('/catalog/products', { method: 'POST', body: product }),
+    updateProduct: (id, patch) => r(`/catalog/products/${enc(id)}`, { method: 'PATCH', body: patch }),
+    deleteProduct: (id) => r(`/catalog/products/${enc(id)}`, { method: 'DELETE' }),
     listApiKeys: () => r('/api-keys'),
     createApiKey: (label) => r('/api-keys', { method: 'POST', body: { label } }),
     revokeApiKey: (keyId, { force = false } = {}) => r(`/api-keys/${enc(keyId)}${force ? '?force=true' : ''}`, { method: 'DELETE' }),
     chat: (payload) => r('/chat', { method: 'POST', body: payload }),
-    // Translate one message into 'en' or 'hi' -> { text, target }. Stateless:
-    // it touches no session, so translating a reply never resets the chat.
-    translate: (text, target) => r('/translate', { method: 'POST', body: { text, target } }),
+    // Custom outbound SMTP. The password is write-only: getSmtpConfig returns
+    // it masked, and saving/testing with the mask reuses the stored one.
+    getSmtpConfig: () => r('/smtp-config'),
+    saveSmtpConfig: (payload) => r('/smtp-config', { method: 'PUT', body: payload }),
+    testSmtpConfig: (payload) => r('/smtp-config/test', { method: 'POST', body: payload }),
     // Starter questions written from this tenant's documents: { status, supportFaqs, salesFaqs, generatedAt }
     getFaqs: () => r('/faqs'),
     regenerateFaqs: () => r('/faqs/regenerate', { method: 'POST' }),

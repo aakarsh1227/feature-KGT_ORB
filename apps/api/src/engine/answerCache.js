@@ -71,10 +71,15 @@ class AnswerCache {
     this.stats = { hits: 0, misses: 0, stores: 0, evictions: 0, invalidations: 0 };
   }
 
-  static key(tenantId, botType, question) {
+  // language is part of the key because the reply language is now dictated by
+  // the UI selector, not the question text (engine/language.js): the same
+  // question asked under the English and the Hindi toggle must not share an
+  // entry, or one language's cached answer would be served to the other.
+  static key(tenantId, botType, question, language) {
     const normalized = normalizeQuestion(question);
     if (!tenantId || !botType || !normalized) return null;
-    return `${tenantId}:${botType}:${normalized}`;
+    const lang = language === 'hi' ? 'hi' : 'en';
+    return `${tenantId}:${botType}:${lang}:${normalized}`;
   }
 
   /**
@@ -93,9 +98,9 @@ class AnswerCache {
    *   both here and to set(), so one turn costs one generation read.
    * @returns {{ value: object|null }}
    */
-  get(tenantId, botType, question, generation) {
+  get(tenantId, botType, question, generation, language) {
     const { enabled } = config();
-    const key = AnswerCache.key(tenantId, botType, question);
+    const key = AnswerCache.key(tenantId, botType, question, language);
     if (!enabled || !key) return { value: null };
 
     const entry = this.entries.get(key);
@@ -117,9 +122,9 @@ class AnswerCache {
    * caller, which is the whole point of the check.
    * @returns {Promise<boolean>}
    */
-  async set(tenantId, botType, question, value, generation) {
+  async set(tenantId, botType, question, value, generation, language) {
     const { enabled, ttlMs, maxEntries } = config();
-    const key = AnswerCache.key(tenantId, botType, question);
+    const key = AnswerCache.key(tenantId, botType, question, language);
     if (!enabled || !key) return false;
     if (generation !== await this.generation(tenantId)) return false; // knowledge changed mid-call: may be stale
 

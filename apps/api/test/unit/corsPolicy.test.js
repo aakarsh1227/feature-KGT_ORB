@@ -4,10 +4,28 @@ const express = require('express');
 const { corsPolicy, allowedOrigins, isPublicPath, DEV_ORIGINS } = require('../../src/utils/corsPolicy');
 
 describe('corsPolicy — open for the widget, web-app-only for everything else', () => {
-  test('allowedOrigins parses CORS_ORIGINS and falls back to the local dev origins', () => {
+  test('allowedOrigins is the configured origins PLUS the local dev origins', () => {
     assert.deepEqual(allowedOrigins({ CORS_ORIGINS: ' https://a.example.com/ , https://b.example.com ' }),
-      ['https://a.example.com', 'https://b.example.com']);
+      ['https://a.example.com', 'https://b.example.com', ...DEV_ORIGINS]);
     assert.deepEqual(allowedOrigins({}), DEV_ORIGINS);
+    // No duplicate when CORS_ORIGINS already lists a dev origin (order is
+    // irrelevant to CORS — compare membership).
+    assert.deepEqual(
+      allowedOrigins({ CORS_ORIGINS: 'http://localhost:3100' }).slice().sort(),
+      DEV_ORIGINS.slice().sort()
+    );
+  });
+
+  test('the dev origins cover localhost :3000, :3001 and :3100', () => {
+    assert.deepEqual(DEV_ORIGINS, ['http://localhost:3000', 'http://localhost:3001', 'http://localhost:3100']);
+  });
+
+  test('localhost stays allowed even under DEPLOY_ENV=production (local docker runs as production)', () => {
+    // The real failure: the local stack ships DEPLOY_ENV=production with
+    // production-only CORS_ORIGINS, yet localhost must still reach the API.
+    const origins = allowedOrigins({ CORS_ORIGINS: 'https://hub.kgt.solutions', DEPLOY_ENV: 'production' });
+    assert.ok(origins.includes('https://hub.kgt.solutions'));
+    for (const dev of DEV_ORIGINS) assert.ok(origins.includes(dev), `${dev} must be allowed`);
   });
 
   test('only the widget, its chat API and /health are public', () => {
@@ -47,6 +65,16 @@ describe('corsPolicy — open for the widget, web-app-only for everything else',
       const r = await preflight(path, 'https://hub.example.com');
       assert.equal(r.headers.get('access-control-allow-origin'), 'https://hub.example.com', path);
     }
+  });
+
+  test('a local dev origin (:3001) can call dashboard APIs even when CORS_ORIGINS lists only production', async () => {
+    // The exact failure from the bug report: frontend on localhost:3001,
+    // CORS_ORIGINS set to the deployed origin only.
+    const r = await preflight('/api/v1/public/auth/send-otp', 'http://localhost:3001');
+    assert.equal(r.headers.get('access-control-allow-origin'), 'http://localhost:3001');
+    assert.equal(r.headers.get('access-control-allow-credentials'), 'true');
+    assert.match(r.headers.get('access-control-allow-headers') || '', /Authorization/i);
+    assert.equal(r.status, 204);
   });
 
   test('any other origin gets no CORS grant on dashboard and staff APIs', async () => {

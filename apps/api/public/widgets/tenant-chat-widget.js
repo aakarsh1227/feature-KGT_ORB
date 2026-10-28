@@ -115,10 +115,7 @@
       emptySupport: 'Need help? Ask anything — answers come from this company’s own content.',
       emptySales: 'Questions about plans, pricing or features? Ask away — answers come from this company’s own content.',
       langPrompt: 'Choose your language', suggested: 'Suggested questions',
-      translateToHi: 'हिंदी में देखें / Translate to Hindi',
-      translateToEn: 'Translate to English',
-      showOriginal: 'Show original', translating: 'Translating…',
-      translateFailed: 'Could not translate — please try again.',
+      products: 'Products', inquire: 'Inquire', inquirePrefix: 'Tell me more about ', view: 'View product',
       errorGeneric: 'The bot could not respond.'
     },
     hi: {
@@ -128,17 +125,11 @@
       emptySupport: 'मदद चाहिए? कुछ भी पूछें — जवाब इसी कंपनी की अपनी जानकारी से आते हैं।',
       emptySales: 'प्लान, कीमत या फ़ीचर्स के बारे में सवाल हैं? बेझिझक पूछें — जवाब इसी कंपनी की अपनी जानकारी से आते हैं।',
       langPrompt: 'अपनी भाषा चुनें', suggested: 'सुझाए गए सवाल',
-      translateToHi: 'हिंदी में देखें / Translate to Hindi',
-      translateToEn: 'Translate to English',
-      showOriginal: 'मूल भाषा में देखें', translating: 'अनुवाद हो रहा है…',
-      translateFailed: 'अनुवाद नहीं हो सका — कृपया फिर से कोशिश करें।',
+      products: 'उत्पाद', inquire: 'जानकारी लें', inquirePrefix: 'इसके बारे में और बताइए: ', view: 'उत्पाद देखें',
       errorGeneric: 'बॉट जवाब नहीं दे सका।'
     }
   };
   function t(key) { return (STRINGS[lang] && STRINGS[lang][key]) || STRINGS.en[key] || ''; }
-  // Which language a given reply is written in, for choosing its translate
-  // button's direction: any Devanagari means Hindi, otherwise English.
-  function textLang(text) { return /[ऀ-ॿ]/.test(String(text || '')) ? 'hi' : 'en'; }
 
   var style = document.createElement('style');
   style.textContent =
@@ -182,6 +173,18 @@
     '#' + ns + '-send{border:none;background:#0f172a;color:#fff;font-size:13px;font-weight:600;padding:0 14px;' +
     'border-radius:8px;cursor:pointer;}' +
     '#' + ns + '-send:disabled{opacity:.4;cursor:not-allowed;}' +
+    // Product cards under a bot reply.
+    '#' + ns + '-body .cards{align-self:flex-start;display:flex;flex-direction:column;gap:8px;max-width:92%;width:100%;}' +
+    '#' + ns + '-body .pcard{display:flex;gap:10px;align-items:center;border:1px solid #e2e8f0;border-radius:12px;' +
+    'padding:8px;background:#fff;}' +
+    '#' + ns + '-body .pcard-img{width:48px;height:48px;border-radius:8px;object-fit:cover;flex-shrink:0;background:#f1f5f9;}' +
+    '#' + ns + '-body .pcard-body{min-width:0;flex:1;}' +
+    '#' + ns + '-body .pcard-name{font-size:12.5px;font-weight:600;color:#0f172a;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}' +
+    '#' + ns + '-body .pcard-price{font-size:12px;color:#334155;margin-top:1px;}' +
+    '#' + ns + '-body .pcard-btn{display:inline-flex;align-items:center;border:1px solid #0f172a;background:#0f172a;' +
+    'color:#fff;border-radius:8px;padding:6px 10px;font-size:11.5px;font-weight:600;cursor:pointer;' +
+    'font-family:inherit;flex-shrink:0;text-decoration:none;}' +
+    '#' + ns + '-body .pcard-btn:hover{opacity:.9;}' +
     // Header right side: the small EN/हिं language toggle beside the close button.
     '#' + ns + '-head-right{display:flex;align-items:center;gap:6px;}' +
     '#' + ns + '-lang{display:flex;gap:2px;background:#f1f5f9;border-radius:999px;padding:2px;}' +
@@ -197,14 +200,7 @@
     'padding:8px 18px;font-size:13.5px;font-weight:600;cursor:pointer;font-family:inherit;}' +
     '#' + ns + '-body .langpick button:hover{border-color:#0f172a;}' +
     '#' + ns + '-body .langpick button.active{background:#0f172a;color:#fff;border-color:#0f172a;}' +
-    '#' + ns + '-body .langpick .lp-hint{color:#94a3b8;font-size:12px;line-height:1.4;}' +
-    // Subtle "Translate" action at the foot of each bot message bubble.
-    '#' + ns + '-body .msgfoot{margin-top:7px;padding-top:6px;border-top:1px solid rgba(15,23,42,.08);}' +
-    '#' + ns + '-body .tr-btn{border:none;background:none;color:#475569;font-size:11.5px;font-weight:600;' +
-    'cursor:pointer;padding:0;font-family:inherit;text-decoration:underline;text-underline-offset:2px;}' +
-    '#' + ns + '-body .tr-btn:hover{color:#0f172a;}' +
-    '#' + ns + '-body .tr-btn:disabled{opacity:.6;cursor:default;text-decoration:none;}' +
-    '#' + ns + '-body .tr-err{color:#b91c1c;font-size:11px;margin-top:4px;}';
+    '#' + ns + '-body .langpick .lp-hint{color:#94a3b8;font-size:12px;line-height:1.4;}';
   document.head.appendChild(style);
 
   var launcher = document.createElement('button');
@@ -280,14 +276,13 @@
       var m = msgs[i];
       var el = document.createElement('div');
       el.className = 'msg ' + (m.role === 'user' ? 'user' : m.error ? 'err' : 'bot');
-      if (m.role === 'assistant' && !m.error) {
-        var showTranslated = m.showing === 'translated' && m.translated;
-        renderRichText(el, showTranslated ? m.translated.text : m.text);
-        el.appendChild(buildTranslateFooter(m));
-      } else {
-        el.textContent = m.text;
-      }
+      if (m.role === 'assistant' && !m.error) renderRichText(el, m.text);
+      else el.textContent = m.text;
       body.appendChild(el);
+      // Rich product cards the API matched to this reply.
+      if (m.role === 'assistant' && !m.error && m.products && m.products.length) {
+        body.appendChild(buildProductCards(m.products));
+      }
     }
     // Suggested follow-ups under the latest reply only; clicking one asks it.
     var last = msgs[msgs.length - 1];
@@ -306,6 +301,65 @@
       body.appendChild(chips);
     }
     body.scrollTop = body.scrollHeight;
+  }
+
+  // Rich product cards for the items the API matched to a reply. Built with
+  // createElement/textContent only (never innerHTML), so catalog data can't
+  // inject markup into the host page; the image is a plain src attribute and
+  // hides itself if it fails to load.
+  function buildProductCards(products) {
+    var wrap = document.createElement('div');
+    wrap.className = 'cards';
+    wrap.setAttribute('aria-label', t('products'));
+    for (var i = 0; i < products.length; i++) {
+      var p = products[i] || {};
+      var card = document.createElement('div');
+      card.className = 'pcard';
+      if (p.imageUrl) {
+        var img = document.createElement('img');
+        img.className = 'pcard-img';
+        img.src = p.imageUrl;
+        img.alt = p.name || '';
+        img.addEventListener('error', function (e) { e.currentTarget.style.display = 'none'; });
+        card.appendChild(img);
+      }
+      var info = document.createElement('div');
+      info.className = 'pcard-body';
+      var name = document.createElement('div');
+      name.className = 'pcard-name';
+      name.textContent = p.name || '';
+      info.appendChild(name);
+      if (p.price) {
+        var price = document.createElement('div');
+        price.className = 'pcard-price';
+        price.textContent = p.price;
+        info.appendChild(price);
+      }
+      card.appendChild(info);
+      // A direct purchase/product link when we have a safe http(s) URL;
+      // otherwise an "Inquire" button that asks the bot about the item.
+      var url = p.productUrl && /^https?:\/\//i.test(p.productUrl) ? p.productUrl : '';
+      if (url) {
+        var link = document.createElement('a');
+        link.className = 'pcard-btn';
+        link.href = url;
+        link.target = '_blank';
+        link.rel = 'noopener noreferrer';
+        link.textContent = t('view');
+        card.appendChild(link);
+      } else {
+        var btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'pcard-btn';
+        btn.textContent = t('inquire');
+        (function (productName) {
+          btn.addEventListener('click', function () { sendQuery(t('inquirePrefix') + productName); });
+        })(p.name || '');
+        card.appendChild(btn);
+      }
+      wrap.appendChild(card);
+    }
+    return wrap;
   }
 
   // The welcome/FAQ view's language picker: a label, the two language buttons
@@ -336,65 +390,6 @@
     hint.textContent = t(botType === 'sales' ? 'emptySales' : 'emptySupport');
     wrap.appendChild(hint);
     return wrap;
-  }
-
-  // The subtle translate action at the foot of a bot bubble. Its direction
-  // follows the message's OWN language, not the UI language: a Hindi reply
-  // offers "Translate to English", an English reply offers Hindi. Once
-  // translated it toggles between the translation and the original without
-  // re-fetching (the translation is cached on the message).
-  function buildTranslateFooter(m) {
-    var foot = document.createElement('div');
-    foot.className = 'msgfoot';
-
-    var btn = document.createElement('button');
-    btn.type = 'button';
-    btn.className = 'tr-btn';
-    if (m.translating) {
-      btn.textContent = t('translating');
-      btn.disabled = true;
-    } else if (m.showing === 'translated' && m.translated) {
-      btn.textContent = t('showOriginal');
-    } else {
-      btn.textContent = textLang(m.text) === 'hi' ? t('translateToEn') : t('translateToHi');
-    }
-    btn.addEventListener('click', function () { toggleTranslation(m); });
-    foot.appendChild(btn);
-
-    if (m.translateError) {
-      var err = document.createElement('div');
-      err.className = 'tr-err';
-      err.textContent = t('translateFailed');
-      foot.appendChild(err);
-    }
-    return foot;
-  }
-
-  // Show/hide a message's translation, fetching it once on first use. Keeps
-  // the chat session untouched: it calls the stateless /translate endpoint,
-  // not /chat, so no session, turn or follow-up is affected.
-  function toggleTranslation(m) {
-    if (m.translating) return;
-    m.translateError = false;
-    if (m.showing === 'translated') { m.showing = 'original'; renderMessages(); return; }
-    if (m.translated) { m.showing = 'translated'; renderMessages(); return; }
-
-    var target = textLang(m.text) === 'hi' ? 'en' : 'hi';
-    m.translating = true;
-    renderMessages();
-    fetch(apiBase + '/api/v1/tenant-chat/' + encodeURIComponent(tenantSlug) + '/translate', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-tenant-api-key': apiKey },
-      body: JSON.stringify({ text: m.text, target: target })
-    })
-      .then(function (res) { return res.json().then(function (data) { return { ok: res.ok, data: data }; }); })
-      .then(function (result) {
-        if (!result.ok || !result.data || !result.data.text) throw new Error('translate failed');
-        m.translated = { text: result.data.text, lang: result.data.target || target };
-        m.showing = 'translated';
-      })
-      .catch(function () { m.translateError = true; })
-      .finally(function () { m.translating = false; renderMessages(); });
   }
 
   // Bot replies use a small formatting subset (engine/promptBuilder.js "HOW
@@ -498,9 +493,8 @@
     fetch(apiBase + '/api/v1/tenant-chat/' + encodeURIComponent(tenantSlug) + '/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'x-tenant-api-key': apiKey },
-      // language: the UI's selected language, a hint only — the backend
-      // answers in whatever language this message is actually written in, and
-      // falls back to this when the message is too short to tell.
+      // language: the selected UI language — authoritative, so the bot
+      // replies in it whatever language the question is typed in.
       body: JSON.stringify({ query: query, botType: sentBot, sessionId: sessionIds[sentBot], language: lang })
     })
       .then(function (res) {
@@ -509,7 +503,7 @@
       .then(function (result) {
         if (!result.ok) throw new Error(result.data && result.data.error ? result.data.error : t('errorGeneric'));
         sessionIds[sentBot] = result.data.sessionId;
-        byBotMessages[sentBot].push({ role: 'assistant', text: result.data.answer, followUps: result.data.followUps || [] });
+        byBotMessages[sentBot].push({ role: 'assistant', text: result.data.answer, followUps: result.data.followUps || [], products: result.data.products || [] });
       })
       .catch(function (err) {
         byBotMessages[sentBot].push({ role: 'assistant', text: err.message, error: true });

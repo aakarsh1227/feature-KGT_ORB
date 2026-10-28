@@ -5,8 +5,7 @@ const {
   detectLanguage,
   normalizeLanguage,
   resolveLanguage,
-  languageDirective,
-  translationSystemPrompt
+  languageDirective
 } = require('../../src/engine/language');
 const { buildUserPrompt } = require('../../src/engine/promptBuilder');
 
@@ -44,23 +43,25 @@ describe('language: normalizeLanguage', () => {
   });
 });
 
-describe('language: resolveLanguage — the message wins, the UI hint only breaks ties', () => {
-  test('a Hindi message is answered in Hindi even if the UI is English', () => {
-    assert.equal(resolveLanguage('en', 'yeh kaise kaam karta hai'), 'hi');
-    assert.equal(resolveLanguage('en', 'यह कैसे काम करता है'), 'hi');
+describe('language: resolveLanguage — the UI selector is authoritative', () => {
+  test('the selected language wins, whatever the message is written in', () => {
+    // Hindi toggle -> Hindi reply even for an English question, and vice versa.
+    assert.equal(resolveLanguage('hi', 'how does this work?'), 'hi');
+    assert.equal(resolveLanguage('en', 'yeh kaise kaam karta hai'), 'en');
+    assert.equal(resolveLanguage('en', 'यह कैसे काम करता है'), 'en');
   });
 
-  test('an English message is answered in English even if the UI is Hindi', () => {
-    assert.equal(resolveLanguage('hi', 'how does this work?'), 'en');
+  test('without a selector, it falls back to detecting the message language', () => {
+    assert.equal(resolveLanguage(undefined, 'kitna hai'), 'hi');
+    assert.equal(resolveLanguage('', 'यह कैसे काम करता है'), 'hi');
+    assert.equal(resolveLanguage(null, 'how does this work?'), 'en');
   });
 
-  test('a message with no letters to judge falls back to the UI language', () => {
-    assert.equal(resolveLanguage('hi', '👍'), 'hi');
-    assert.equal(resolveLanguage('hi', '123?'), 'hi');
-    assert.equal(resolveLanguage('en', '123'), 'en');
+  test('an unrecognised selector value is ignored, falling back to detection', () => {
+    assert.equal(resolveLanguage('xx', 'kitna hai'), 'hi');
   });
 
-  test('defaults to English when neither signal is present', () => {
+  test('defaults to English when there is neither a selector nor a detectable message', () => {
     assert.equal(resolveLanguage(null, ''), 'en');
     assert.equal(resolveLanguage('xx', '!!!'), 'en');
   });
@@ -79,31 +80,24 @@ describe('language: languageDirective', () => {
   });
 });
 
-describe('language: translationSystemPrompt', () => {
-  test('targets the requested language and outputs only the translation', () => {
-    assert.match(translationSystemPrompt('hi'), /into Hindi/);
-    assert.match(translationSystemPrompt('en'), /into English/);
-    assert.match(translationSystemPrompt('hi'), /ONLY the translation/);
-  });
-});
-
 describe('language: buildUserPrompt injects the reply-language directive', () => {
   const profile = { excerptLabel: 'KNOWLEDGE BASE EXCERPTS', queryLabel: 'USER MESSAGE' };
   const ranked = [{ chunk: { title: 'Pricing', content: 'Pro is $20/mo.' } }];
 
   test('a Hindi turn carries the Hindi directive', () => {
     const prompt = buildUserPrompt(profile, 'kitna hai', ranked, { language: 'hi' });
-    assert.match(prompt, /LANGUAGE \(highest priority\)/);
+    assert.match(prompt, /CRITICAL INSTRUCTION/);
     assert.match(prompt, /Hindi/);
   });
 
   test('an English turn carries the English directive', () => {
     const prompt = buildUserPrompt(profile, 'how much?', ranked, { language: 'en' });
-    assert.match(prompt, /Write your entire reply in English/);
+    assert.match(prompt, /CRITICAL INSTRUCTION/);
+    assert.match(prompt, /exclusively in\s+English|exclusively in English/);
   });
 
   test('no language on ctx leaves the prompt directive-free', () => {
     const prompt = buildUserPrompt(profile, 'how much?', ranked, {});
-    assert.doesNotMatch(prompt, /LANGUAGE \(highest priority\)/);
+    assert.doesNotMatch(prompt, /CRITICAL INSTRUCTION/);
   });
 });

@@ -39,6 +39,11 @@ model Tenant {
   // all of the knowledge and the readiness audit judges only its scope
   // (services/shared/botScope.js, services/botAuditor.js).
   botPreference     String   @default("both")
+  // The company's business category, chosen in the onboarding wizard
+  // (ecommerce | saas | healthcare | real_estate | services | other). Drives
+  // the tailored upload prompts and a light tone hint for the bots
+  // (services/shared/businessCategory.js). Null for tenants created before it.
+  businessCategory  String?
   // Where lead and low-confidence alerts go (services/teamAlerts.js). Null =
   // the signup email, then the tenant's dashboard users. Lower-cased.
   teamEmail         String?
@@ -61,6 +66,54 @@ model Tenant {
   leads        Lead[]
   usageLogs    UsageLog[]
   starterFaqs  TenantFaq?
+  smtpConfig   TenantSmtpConfig?
+  products     ProductCatalog[]
+}
+
+// Structured product rows from a catalog CSV upload (services/catalogIngest.js).
+// Stored alongside the readable TenantDocument the CSV is also turned into, so
+// the existing RAG can answer price/product questions from its text while
+// these rows keep the exact, queryable data. Strictly tenant-scoped; deleting
+// the source document cascades its rows away.
+model ProductCatalog {
+  id          String          @id @default(uuid())
+  tenant      Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tenantId    String
+  document    TenantDocument? @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  documentId  String?
+  name        String
+  sku         String
+  price       String          // kept as text: currencies, ranges and "POA" are all valid
+  description String          @default("")
+  category    String?         // the item's own category/type (e.g. "Electronics", "Course"), not the tenant's business category
+  imageUrl    String?         // an image/picture URL for the product or course
+  productUrl  String?         // a direct product / purchase / checkout link shown on the card
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+
+  @@index([tenantId])
+  @@index([tenantId, sku])
+}
+
+// A tenant's own outbound SMTP, so ticket alerts, lead emails and other
+// notifications go out from their domain instead of the platform mailbox
+// (services/mailer.js falls back to the global SMTP when this is absent or
+// disabled). smtpPass is stored ONLY as AES-256-GCM ciphertext
+// (utils/encryption.js) and is never returned to the client — the API masks
+// it. One row per tenant.
+model TenantSmtpConfig {
+  id        String   @id @default(uuid())
+  tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tenantId  String   @unique
+  provider  String?  // 'gmail' | 'outlook' | null (custom) — drives the UI's provider picker and help text
+  smtpHost  String
+  smtpPort  Int      @default(587)
+  smtpUser  String
+  smtpPass  String   // AES-256-GCM ciphertext (never plaintext, never sent to the client)
+  smtpFrom  String
+  isEnabled Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 // Starter questions for the Test Bots sandbox, written by an LLM from this
@@ -72,8 +125,10 @@ model TenantFaq {
   id          String    @id @default(uuid())
   tenant      Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   tenantId    String    @unique
-  supportFaqs String[]  @default([])
+  supportFaqs String[]  @default([]) // English starter questions (index-aligned with the *Hi arrays)
   salesFaqs   String[]  @default([])
+  supportFaqsHi String[] @default([]) // Hindi variants, same order; falls back to English where a translation is missing
+  salesFaqsHi   String[] @default([])
   status      String    @default("pending")
   error       String?   // last failure reason, for staff; never shown to clients
   generatedAt DateTime? // when the current questions were written
@@ -212,6 +267,7 @@ model TenantDocument {
   botScope   BotScope         @default(AUTO)
   createdAt  DateTime         @default(now())
   updatedAt  DateTime         @updatedAt
+  products   ProductCatalog[]
 
   @@index([tenantId])
   @@index([tenantId, category])

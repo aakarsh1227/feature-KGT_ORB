@@ -63,7 +63,11 @@ const keys = {
   alertSession: (tenantId, sessionId) => `al:s:${tenantId}:${sessionId}`,
   alertTenant: (tenantId) => `al:t:${tenantId}`,
   wizardAudit: (contentHash) => `wa:${contentHash}`,
-  jobLock: (job, subject) => `lock:${job}:${subject}`
+  jobLock: (job, subject) => `lock:${job}:${subject}`,
+  // Short-term memory of the product cards shown in a chat session's last
+  // product turn, so a follow-up like "link as well" can carry them forward
+  // (services/tenantChat.js). Scoped by tenant + session; expires on its own.
+  productContext: (tenantId, sessionId) => `pc:${tenantId}:${sessionId}`
 };
 
 /**

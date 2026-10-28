@@ -6,7 +6,7 @@ import { api, clientWorkspace, setToken } from '../../lib/api';
 import { Logo, Skeleton, cx } from '../ui';
 import { useToast } from '../ui/toast';
 import {
-  IconBuilding, IconBot, IconChart, IconDocs, IconGlobe, IconInbox, IconKey, IconLogout, IconOverview, IconPlus, IconSidebar, IconTicket, IconX
+  IconBuilding, IconBot, IconChart, IconDocs, IconGlobe, IconInbox, IconKey, IconLogout, IconMail, IconOverview, IconPlus, IconSidebar, IconTicket, IconX
 } from '../ui/icons';
 
 // Signed-in shell for both audiences. It confirms the session before
@@ -28,7 +28,8 @@ const AUDIENCES = {
       { href: '/dashboard/keys', label: 'API keys', icon: IconKey },
       { href: '/dashboard/tickets', label: 'Tickets', icon: IconTicket },
       { href: '/dashboard/leads', label: 'Leads & Summaries', icon: IconInbox },
-      { href: '/dashboard/usage', label: 'Usage', icon: IconChart }
+      { href: '/dashboard/usage', label: 'Usage', icon: IconChart },
+      { href: '/dashboard/smtp', label: 'Email settings', icon: IconMail }
     ]
   },
   staff: {

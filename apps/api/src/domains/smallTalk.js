@@ -40,7 +40,7 @@ registerAction('smalltalk', {
     const kind = smallTalkKind(query);
     // A first "Hi" gets the full welcome; later ones a lighter touch.
     const firstTurn = !(ctx.recentTurns || []).some((t) => t.role === 'assistant');
-    const copy = profile.smallTalkCopy;
+    const copy = profile.smallTalkCopy(ctx.language); // in the UI-selected language
     const answer = kind === 'greeting' && !firstTurn ? copy.greetingAgain : copy[kind];
     return answer ? { answer, smallTalk: true } : null;
   }

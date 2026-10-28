@@ -21,12 +21,22 @@ const GENERIC_FOLLOW_UPS = Object.freeze({
   sales: ['Can I schedule a demo?', 'How do I get started?', 'Can I talk to someone on your team?']
 });
 
+// Hindi equivalents, shown when the selected language is Hindi so the generic
+// fallback chips aren't English under a Hindi conversation.
+const GENERIC_FOLLOW_UPS_HI = Object.freeze({
+  support: ['मैं अपनी भुगतान विधि कैसे बदलूँ?', 'अगर मेरा टिकट देर से हल हो तो क्या होगा?', 'मैं आपकी सहायता टीम से कैसे संपर्क करूँ?'],
+  sales: ['क्या मैं डेमो शेड्यूल कर सकता हूँ?', 'मैं कैसे शुरू करूँ?', 'क्या मैं आपकी टीम से बात कर सकता हूँ?']
+});
+
 /**
- * @param {{ botType: 'support'|'sales', faqs?: string[], asked?: string[], query: string, answer?: string }} params
- *   faqs: the tenant's FAQs for this bot; asked: questions already asked in this session.
+ * @param {{ botType: 'support'|'sales', faqs?: string[], asked?: string[], query: string, answer?: string, language?: 'en'|'hi' }} params
+ *   faqs: the tenant's FAQs for this bot IN THE ACTIVE LANGUAGE (the caller
+ *   picks the English or Hindi list); asked: questions already asked this
+ *   session; language: which generic fallback set to use when the tenant's
+ *   own questions run out.
  * @returns {string[]} 0-3 questions, most relevant first
  */
-function pickFollowUps({ botType, faqs = [], asked = [], query, answer = '' }) {
+function pickFollowUps({ botType, faqs = [], asked = [], query, answer = '', language }) {
   const seen = new Set([...asked, query].map(normalizeQuestion));
   const fresh = (questions) => questions.filter((q) => {
     const key = normalizeQuestion(q);
@@ -44,7 +54,8 @@ function pickFollowUps({ botType, faqs = [], asked = [], query, answer = '' }) {
     .slice(0, MAX_FOLLOW_UPS);
 
   if (tenantPicks.length >= MIN_FOLLOW_UPS) return tenantPicks;
-  return [...tenantPicks, ...fresh(GENERIC_FOLLOW_UPS[botType] || [])].slice(0, MAX_FOLLOW_UPS);
+  const generics = (language === 'hi' ? GENERIC_FOLLOW_UPS_HI : GENERIC_FOLLOW_UPS)[botType] || [];
+  return [...tenantPicks, ...fresh(generics)].slice(0, MAX_FOLLOW_UPS);
 }
 
-module.exports = { pickFollowUps, GENERIC_FOLLOW_UPS, MIN_FOLLOW_UPS, MAX_FOLLOW_UPS };
+module.exports = { pickFollowUps, GENERIC_FOLLOW_UPS, GENERIC_FOLLOW_UPS_HI, MIN_FOLLOW_UPS, MAX_FOLLOW_UPS };

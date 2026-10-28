@@ -1,18 +1,17 @@
 const express = require('express');
 const prisma = require('../lib/prisma');
 const { findValidApiKey, shouldTouchLastUsed } = require('../utils/tenantApiKeys');
-const { handleChat, handleTranslate } = require('../services/tenantChat');
+const { handleChat } = require('../services/tenantChat');
 const { endSession } = require('../services/chatSessions');
 
 // Public chat endpoint used by the embed widget and customers' own apps:
 //   POST /api/v1/tenant-chat/:slug/chat   header X-Tenant-Api-Key: tk_...
-//   body { query, botType: "support" | "sales" (alias: bot; default support), sessionId? }
-//   POST /api/v1/tenant-chat/:slug/translate  header X-Tenant-Api-Key: tk_...
-//     body { text, target: "en" | "hi" } -> { text, target }  (per-message translation)
+//   body { query, botType: "support" | "sales" (alias: bot; default support), sessionId?, language? }
 // botType picks the persona and the category weighting (domains/tenantProfile.js);
 // an unknown value is a 400, and the response echoes the botType that answered.
-// The reply language follows the visitor's own message (engine/language.js);
-// the response also echoes the `language` it came out in.
+// language ("en" | "hi") sets the reply language; without it the engine falls
+// back to detecting the message's own language (engine/language.js). The
+// response echoes the `language` it came out in.
 // The slug picks the tenant; the key must be a live (non-revoked) key of
 // THAT tenant, matched by SHA-256 hash — a key of another tenant is
 // rejected exactly like an unknown one. Everything after this point
@@ -39,12 +38,6 @@ router.use('/:slug', async (req, res, next) => {
 });
 
 router.post('/:slug/chat', handleChat);
-
-// Translate one bot message on demand: body { text, target: "en" | "hi" },
-// response { text, target }. Used by the per-message "Translate" button in
-// the widget. Stateless — it runs no retrieval and touches no session, so
-// translating a reply never disturbs the conversation (services/tenantChat.js).
-router.post('/:slug/translate', handleTranslate);
 
 // The widget reports its page closing: body { sessionId }. The conversation
 // is summarized now instead of after the idle delay (services/chatSessions.js).

@@ -84,6 +84,13 @@ process.on('unhandledRejection', (err) => {
   console.error('[unhandledRejection]', err);
 });
 
+// CORS is configured in app.js via utils/corsPolicy.js (per-path: open for the
+// widget, web-app-origins-only for the dashboard, with preflight handled
+// there). It is NOT set up here: app.js has already mounted every route, the
+// /api JSON 404 and the error handler by the time this file runs, so any
+// app.use() added now sits after them and never runs. Change the allowlist in
+// corsPolicy.js (and CORS_ORIGINS), not here.
+
 const port = process.env.PORT || 4000;
 app.listen(port, () => {
   console.log(`KGT AI Hub API running at http://localhost:${port}`);

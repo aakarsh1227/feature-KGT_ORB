@@ -10,9 +10,30 @@ describe('tenantFaqs: parseFaqResponse', () => {
     assert.deepEqual(out.salesFaqs, ['What does the Pro plan cost?', 'How fast can you deploy?']);
   });
 
-  test('tolerates code fences and prose around the JSON', () => {
+  test('tolerates code fences and prose around the JSON (old string form; Hindi mirrors English)', () => {
     const out = parseFaqResponse('Here you go:\n```json\n{"support":["How do I pair the sensor?"],"sales":["Is there a free trial?"]}\n```');
-    assert.deepEqual(out, { supportFaqs: ['How do I pair the sensor?'], salesFaqs: ['Is there a free trial?'] });
+    assert.deepEqual(out, {
+      supportFaqs: ['How do I pair the sensor?'], salesFaqs: ['Is there a free trial?'],
+      supportFaqsHi: ['How do I pair the sensor?'], salesFaqsHi: ['Is there a free trial?']
+    });
+  });
+
+  test('reads the bilingual pair form and aligns Hindi with English by index', () => {
+    const out = parseFaqResponse(JSON.stringify({
+      support: [{ en: 'How do I reset my router?', hi: 'मैं अपना राउटर कैसे रीसेट करूँ?' }],
+      sales: [{ en: 'What does the Pro plan cost?', hi: 'प्रो प्लान की कीमत क्या है?' }]
+    }));
+    assert.deepEqual(out.supportFaqs, ['How do I reset my router?']);
+    assert.deepEqual(out.supportFaqsHi, ['मैं अपना राउटर कैसे रीसेट करूँ?']);
+    assert.deepEqual(out.salesFaqsHi, ['प्रो प्लान की कीमत क्या है?']);
+  });
+
+  test('falls back to the English question when a pair is missing its Hindi', () => {
+    const out = parseFaqResponse(JSON.stringify({
+      support: [{ en: 'How do I log in?' }], sales: [{ en: 'Is there a trial?', hi: '   ' }]
+    }));
+    assert.deepEqual(out.supportFaqsHi, ['How do I log in?']);
+    assert.deepEqual(out.salesFaqsHi, ['Is there a trial?']);
   });
 
   test('cleans list markers, adds a missing "?", caps each list, and drops junk', () => {

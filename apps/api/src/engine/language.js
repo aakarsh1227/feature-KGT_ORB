@@ -1,16 +1,14 @@
 // Multilingual support for tenant chat (English + Hindi). Two jobs:
 //
-//   1. Contextual language matching — look at what the visitor actually
-//      typed and decide which language the bot must answer in, so a Hindi
-//      question gets a Hindi answer and an English question an English one,
-//      regardless of the UI language the widget picked. The widget's selected
-//      language is only a hint, used when the message itself gives no signal
-//      (a bare "ok", an emoji, a number).
+//   1. Resolve the reply language — the UI's top-level selector
+//      (body.language) is authoritative: the bot answers in it whatever the
+//      question is typed in. Only when no selector is sent do we fall back to
+//      detecting the message's own language (so a customer calling the chat
+//      API directly still gets a sensible match).
 //
-//   2. Prompt fragments — a language directive appended to the user prompt
-//      (where models follow a closing instruction most reliably, see
-//      promptBuilder.js), and a self-contained translation prompt for the
-//      per-message "Translate" button (services/tenantChat.js runTranslate).
+//   2. Prompt fragment — a language directive appended to the user prompt,
+//      where models follow a closing instruction most reliably (see
+//      promptBuilder.js).
 //
 // Only en/hi are supported; everything normalizes to one of those two.
 
@@ -69,16 +67,18 @@ function normalizeLanguage(value) {
 }
 
 /**
- * The language the bot must answer in: what the visitor actually wrote wins,
- * so a Hindi message always gets a Hindi answer and an English message an
- * English one. The UI hint (the widget's selected language) is used only when
- * the message itself is too short/ambiguous to tell.
- * @param {unknown} uiHint  the widget's selected language (body.language)
+ * The language the bot must answer in. The UI's top-level selector wins: when
+ * the widget/dashboard sends a language, that is the definitive reply
+ * language, whatever the message is written in — so with the toggle on Hindi
+ * an English question still gets a Hindi answer, and vice versa. Detection
+ * from the message is only a fallback for callers that send no selector (e.g.
+ * a customer hitting the chat API directly).
+ * @param {unknown} uiHint  the UI's selected language (body.language)
  * @param {string} text     the visitor's message
  * @returns {'en'|'hi'}
  */
 function resolveLanguage(uiHint, text) {
-  return detectLanguage(text) || normalizeLanguage(uiHint) || DEFAULT_LANGUAGE;
+  return normalizeLanguage(uiHint) || detectLanguage(text) || DEFAULT_LANGUAGE;
 }
 
 /**
@@ -90,32 +90,17 @@ function resolveLanguage(uiHint, text) {
 function languageDirective(lang) {
   if (lang === 'hi') {
     return (
-      '\n\nLANGUAGE (highest priority): The user is writing in Hindi, so write your ENTIRE reply in ' +
-      'natural, conversational Hindi using Devanagari script. Keep proper nouns, brand and product ' +
-      'names, email addresses, URLs and numbers exactly as they appear. Do not add an English ' +
-      'translation or restate anything in English.'
+      '\n\nCRITICAL INSTRUCTION (overrides everything else): Generate your ENTIRE response exclusively ' +
+      'in natural, conversational Hindi written in Devanagari script. Disregard the language of the ' +
+      "user's input text completely — reply in Hindi even if they wrote in English. Keep proper nouns, " +
+      'brand and product names, email addresses, URLs and numbers exactly as they appear, and do not ' +
+      'add any English translation.'
     );
   }
-  return '\n\nLANGUAGE (highest priority): Write your entire reply in English.';
-}
-
-/**
- * Self-contained system prompt for the per-message translation helper. It
- * translates one already-written bot reply; it never answers questions, so it
- * needs no tenant persona or knowledge — and runs outside the chat session,
- * leaving conversation state untouched.
- * @param {'en'|'hi'} target
- */
-function translationSystemPrompt(target) {
-  const name = LANGUAGES[target] || LANGUAGES.en;
   return (
-    `You are a translation engine. Translate the user's message into ${name}.\n` +
-    'Rules:\n' +
-    '- Output ONLY the translation — no preamble, no quotation marks, no notes, no explanation.\n' +
-    '- Preserve the meaning, tone and formatting: keep line breaks, "• " bullet markers and ' +
-    'numbered steps exactly as they are.\n' +
-    '- Keep proper nouns, brand and product names, email addresses, URLs and numbers unchanged.\n' +
-    `- If the text is already in ${name}, return it unchanged.`
+    '\n\nCRITICAL INSTRUCTION (overrides everything else): Generate your ENTIRE response exclusively in ' +
+    "English. Disregard the language of the user's input text completely — reply in English even if they " +
+    'wrote in another language.'
   );
 }
 
@@ -125,6 +110,5 @@ module.exports = {
   detectLanguage,
   normalizeLanguage,
   resolveLanguage,
-  languageDirective,
-  translationSystemPrompt
+  languageDirective
 };

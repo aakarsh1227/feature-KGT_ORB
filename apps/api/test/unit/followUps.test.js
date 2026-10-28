@@ -39,4 +39,14 @@ describe('pickFollowUps', () => {
     assert.ok(sales.includes('Can I schedule a demo?'));
     assert.ok(!support.some((q) => sales.includes(q)));
   });
+
+  test('under Hindi, tenant Hindi FAQs and Hindi generic fallbacks are used', () => {
+    const DEVANAGARI = /[ऀ-ॿ]/;
+    // Tenant questions passed in Hindi are returned as-is.
+    const withFaqs = pickFollowUps({ botType: 'support', faqs: ['मैं कैसे शुरू करूँ?', 'रिफ़ंड नीति क्या है?'], query: 'नमस्ते', language: 'hi' });
+    assert.ok(withFaqs.every((q) => DEVANAGARI.test(q)));
+    // With no tenant questions, the generic fallbacks come back in Hindi.
+    const generic = pickFollowUps({ botType: 'sales', faqs: [], query: 'x', language: 'hi' });
+    assert.ok(generic.length >= 2 && generic.every((q) => DEVANAGARI.test(q)));
+  });
 });

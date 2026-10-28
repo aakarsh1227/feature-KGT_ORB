@@ -31,9 +31,16 @@ import TrainingReadinessStep from '../components/signup/TrainingReadinessStep';
 //                         the login in one request, then lands the company, signed
 //                         in, on /dashboard.
 
-const INDUSTRIES = [
-  'SaaS & Technology', 'E-commerce & Retail', 'Healthcare & Pharma', 'Real Estate & Housing',
-  'Fintech & Banking', 'Education', 'Professional Services', 'Other'
+// Business category drives the tailored knowledge prompts and a tone hint for
+// the bots (mirrors apps/api/src/services/shared/businessCategory.js). `asksFor`
+// is shown so the user knows what to prepare.
+const BUSINESS_CATEGORIES = [
+  { value: 'ecommerce', label: 'E-commerce / Retail', asksFor: 'a product catalog or inventory sheet (CSV), plus returns and shipping policies' },
+  { value: 'saas', label: 'SaaS / Tech', asksFor: 'product and API documentation, feature guides, and pricing tiers' },
+  { value: 'healthcare', label: 'Healthcare', asksFor: 'services offered, patient FAQs, and policies' },
+  { value: 'real_estate', label: 'Real Estate', asksFor: 'listings, pricing, and process/policy documents' },
+  { value: 'services', label: 'Services', asksFor: 'service descriptions and terms, FAQs, and company policies' },
+  { value: 'other', label: 'Other', asksFor: 'an overview, FAQs, and your key policies' }
 ];
 const MAX_TRAINING_PAGES = 40; // mirrors MAX_PAGES_ON_COMPLETE in the API
 const STEPS = ['Account', 'Company', 'Choose bots', 'Knowledge', 'Training', 'Review & launch'];
@@ -48,7 +55,7 @@ const isTrainable = (p) => !p.deleted && p.title.trim() && p.content.trim();
 export default function Register() {
   const router = useRouter();
   const [step, setStep] = useState(STEP.ACCOUNT);
-  const [account, setAccount] = useState({ companyName: '', contactName: '', email: '', password: '', confirm: '', industryLabel: INDUSTRIES[0] });
+  const [account, setAccount] = useState({ companyName: '', contactName: '', email: '', password: '', confirm: '', industryLabel: 'Other', businessCategory: 'other' });
 
   // Email verification: { email, token } once the code is confirmed. Tied to
   // the address — changing the email means verifying again.
@@ -144,6 +151,7 @@ export default function Register() {
         email: account.email.trim(),
         password: account.password,
         industryLabel: account.industryLabel,
+        businessCategory: account.businessCategory,
         botPreference,
         pages: trainable.map(toApiPage),
         // Required by the API whenever crawled pages are included; stored as the consent record.
@@ -261,9 +269,16 @@ function StepCompany({ account, setAccount, onBack, onNext }) {
             <Field label="Your name" htmlFor="r-name" hint="Optional">
               <Input id="r-name" value={account.contactName} onChange={set('contactName')} placeholder="Priya Sharma" autoComplete="name" />
             </Field>
-            <Field label="Industry" htmlFor="r-industry">
-              <Select id="r-industry" value={account.industryLabel} onChange={set('industryLabel')}>
-                {INDUSTRIES.map((i) => <option key={i} value={i}>{i}</option>)}
+            <Field label="Business category / industry" htmlFor="r-category"
+              hint={`We'll ask you to add ${(BUSINESS_CATEGORIES.find((c) => c.value === account.businessCategory) || BUSINESS_CATEGORIES[BUSINESS_CATEGORIES.length - 1]).asksFor}.`}>
+              <Select id="r-category" value={account.businessCategory}
+                onChange={(e) => {
+                  const choice = BUSINESS_CATEGORIES.find((c) => c.value === e.target.value) || BUSINESS_CATEGORIES[BUSINESS_CATEGORIES.length - 1];
+                  // One field drives both: the category key (tone/prompts) and
+                  // the human industry label (the bot's role in the prompt).
+                  setAccount((a) => ({ ...a, businessCategory: choice.value, industryLabel: choice.label }));
+                }}>
+                {BUSINESS_CATEGORIES.map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
               </Select>
             </Field>
           </div>

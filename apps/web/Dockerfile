@@ -8,7 +8,9 @@ WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 
-ARG NEXT_PUBLIC_API_URL=http://localhost:4000
+# Compiled into the client bundle: changing it needs a rebuild, not a restart.
+# docker-compose.yml passes PUBLIC_API_URL; a bare `docker build` gets production.
+ARG NEXT_PUBLIC_API_URL=https://api.kgt.solutions
 ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
 ENV NEXT_TELEMETRY_DISABLED=1
 

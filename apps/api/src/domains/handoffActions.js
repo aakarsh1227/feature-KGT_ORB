@@ -121,7 +121,7 @@ async function knownContact(ctx) {
 // A request for a person or a demo: always a ticket, then ask for an email
 // unless this conversation already has one.
 async function handleRequest(kind, query, ctx, profile) {
-  const copy = profile.handoffCopy;
+  const copy = profile.handoffCopy(ctx.language); // in the UI-selected language
   const email = await knownContact(ctx);
   if (profile.ticketing) await fileSupportTicket({ profile, query, ctx, kind, contactEmail: email });
   if (email) return { answer: copy.passedOn(email), handoff: true };
@@ -142,7 +142,7 @@ registerAction('handoff.contact', {
       });
     }
     // contactEmail: for the lead record (services/leads.js); never sent to the chat client.
-    return { answer: profile.handoffCopy.thanks(email), handoff: true, contactCaptured: true, contactEmail: email };
+    return { answer: profile.handoffCopy(ctx.language).thanks(email), handoff: true, contactCaptured: true, contactEmail: email };
   }
 });
 
@@ -151,10 +151,11 @@ registerAction('handoff.contact', {
 registerAction('handoff.reply', {
   match: (query, ctx) => isShort(query) && offerPending(ctx) && (YES.test(query) || NO.test(query)),
   run: async (query, ctx, profile) => {
-    if (NO.test(query)) return { answer: profile.handoffCopy.declined };
+    const copy = profile.handoffCopy(ctx.language); // in the UI-selected language
+    if (NO.test(query)) return { answer: copy.declined };
     const email = await knownContact(ctx);
-    if (email) return { answer: profile.handoffCopy.passedOn(email), handoff: true };
-    return { answer: profile.handoffCopy.askEmail, awaitingContact: true };
+    if (email) return { answer: copy.passedOn(email), handoff: true };
+    return { answer: copy.askEmail, awaitingContact: true };
   }
 });
 

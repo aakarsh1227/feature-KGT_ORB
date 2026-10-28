@@ -1,7 +1,9 @@
 const prisma = require('../lib/prisma');
 const { getEngineAnswer } = require('../engine/chatEngine');
-const llmClient = require('../engine/llmClient'); // called through the module so a test's mock is used
-const { resolveLanguage, normalizeLanguage, translationSystemPrompt } = require('../engine/language');
+const { resolveLanguage } = require('../engine/language');
+const { matchCatalogProducts } = require('./catalogIngest');
+const { isProductListingIntent, isProductFollowUp } = require('./shared/productMatch');
+const { store, keys } = require('../lib/sharedStore');
 const { createTenantSupportProfile, createTenantSalesProfile } = require('../domains/tenantProfile');
 const { createIpRateLimiter } = require('../utils/ipRateLimit');
 const { pickFollowUps } = require('./followUps');
@@ -19,9 +21,12 @@ const { extractStatedEmail } = require('../domains/handoffActions');
 
 const BOT_PROFILE_FACTORIES = { support: createTenantSupportProfile, sales: createTenantSalesProfile };
 const MAX_QUERY_LEN = 1000;
-// A bot answer can be several paragraphs, so the text sent to /translate is
-// allowed to be longer than a visitor's query.
-const MAX_TRANSLATE_LEN = 4000;
+
+// How long a session's last matched product cards stay available to carry
+// forward onto a follow-up turn ("link as well", "show their images"). Long
+// enough to cover a natural back-and-forth, short enough that a much later,
+// unrelated question doesn't resurrect stale cards.
+const PRODUCT_CONTEXT_TTL_MS = 30 * 60 * 1000;
 
 // Per tenant, not per IP: bounds each tenant's LLM spend however many
 // visitors its widget has. The limiter keys by any string.
@@ -81,11 +86,11 @@ async function runTenantChat({ tenant, body, sandbox = false }) {
   if (!bot.ok) throw new ChatRequestError(bot.error, 400);
   const botType = bot.value;
 
-  // Which language the bot must answer in. The message itself decides — a
-  // Hindi question gets a Hindi answer, an English one an English answer —
-  // and the widget's selected language (body.language) is only a fallback for
-  // a message too short to tell (engine/language.js). Echoed back in the
-  // response so the widget knows which language this turn came out in.
+  // Which language the bot must answer in. The UI's top-level selector
+  // (body.language) is authoritative: on Hindi the reply is Hindi even for an
+  // English question, and vice versa. Only a caller that sends no selector
+  // falls back to detecting the message's own language (engine/language.js).
+  // Echoed back in the response so the UI knows which language this turn used.
   const language = resolveLanguage(body?.language, query);
 
   if (await isTenantRateLimited(tenant.id)) {
@@ -125,7 +130,10 @@ async function runTenantChat({ tenant, body, sandbox = false }) {
     prisma.chatMessage.findMany({
       where: { sessionId: session.id, role: 'user' }, orderBy: { createdAt: 'desc' }, take: 50, select: { content: true }
     }),
-    prisma.tenantFaq.findUnique({ where: { tenantId: tenant.id }, select: { supportFaqs: true, salesFaqs: true } })
+    prisma.tenantFaq.findUnique({
+      where: { tenantId: tenant.id },
+      select: { supportFaqs: true, salesFaqs: true, supportFaqsHi: true, salesFaqsHi: true }
+    })
   ]);
 
   // The confidence score is stored here (and on tickets) for staff and
@@ -133,10 +141,46 @@ async function runTenantChat({ tenant, body, sandbox = false }) {
   // captured, which goes to the lead record, nor the answered flag.
   // offTopic only steers the team alert below.
   const { confidence, contactEmail, answered, offTopic, ...reply } = result;
+
+  // Catalog-aware scope correction + product cards. A tenant's own product and
+  // brand queries ("list products", "do you have Pranaa?") must be answered
+  // from the catalog, never dismissed as off-topic. We match the catalog
+  // directly from the database (not via retrieval), so a product is found even
+  // when the generic engine missed it. If we found items but the engine did
+  // NOT answer (off-topic redirect or low-confidence fallback — not a human
+  // handoff), replace that rejection with a short catalog lead-in; the cards
+  // carry the detail. Done before the message is stored so the transcript
+  // matches what the visitor saw.
+  const wantsCatalog = isProductListingIntent(query);
+  const productKey = keys.productContext(tenant.id, session.id);
+  let products = [];
+  if (!reply.handoff && !reply.awaitingContact) {
+    try {
+      products = await matchCatalogProducts(tenant.id, `${query}\n${reply.answer}`, { listIntent: wantsCatalog });
+    } catch (err) {
+      console.warn(`[tenantChat] product match failed for tenant ${tenant.id}: ${err.message}`);
+    }
+    // Multi-turn carryover: the visitor named no product this turn, but the
+    // message refers back to ones we just showed ("link as well", "show
+    // images of those"). Reattach the previous turn's cards so the follow-up
+    // renders links/images instead of being rejected as off-topic.
+    if (!products.length && isProductFollowUp(query)) {
+      try {
+        const prev = await store().get(productKey);
+        if (Array.isArray(prev) && prev.length) products = prev;
+      } catch (err) {
+        console.warn(`[tenantChat] product context read failed for tenant ${tenant.id}: ${err.message}`);
+      }
+    }
+  }
+  const correctedScope = products.length > 0 && !answered && !reply.handoff && !reply.awaitingContact;
+  if (correctedScope) reply.answer = catalogLeadIn(botType, language);
+  const finalAnswered = !!answered || correctedScope;
+
   await prisma.chatMessage.createMany({
     data: [
       { sessionId: session.id, role: 'user', content: query, botType },
-      { sessionId: session.id, role: 'assistant', content: reply.answer, confidence: confidence ?? null, botType, answered: !!answered }
+      { sessionId: session.id, role: 'assistant', content: reply.answer, confidence: confidence ?? null, botType, answered: finalAnswered }
     ]
   });
   // After the messages are written, so the lead's transcript and the alert include this turn.
@@ -149,51 +193,51 @@ async function runTenantChat({ tenant, body, sandbox = false }) {
   const leadEmail = reply.contactCaptured ? contactEmail : extractStatedEmail(query);
   await trackLeadActivity({ tenant, botType, sessionId: session.id, contactEmail: leadEmail, alertTeam });
   // A handoff or an answer below 25% confidence: tell the team now (throttled; not awaited).
-  if (alertTeam) notifyIfNeedsAttention({ tenant, botType, sessionId: session.id, query, result });
+  // A query we answered from the catalog instead is not a miss, so don't alert on it.
+  if (alertTeam && !correctedScope) notifyIfNeedsAttention({ tenant, botType, sessionId: session.id, query, result });
 
   // No suggested questions while the bot is waiting for an email: the reply
   // just asked for one, and chips would pull the visitor away from answering.
+  // Suggested chips in the active language: the Hindi FAQ list under a Hindi
+  // conversation, the English one otherwise (the *Hi arrays fall back to the
+  // English question where a translation was missing — services/tenantFaqs.js).
+  const faqKey = `${botType === 'sales' ? 'sales' : 'support'}Faqs${language === 'hi' ? 'Hi' : ''}`;
   const followUps = reply.awaitingContact ? [] : pickFollowUps({
     botType,
-    faqs: faqRow?.[botType === 'sales' ? 'salesFaqs' : 'supportFaqs'] || [],
+    faqs: faqRow?.[faqKey] || [],
     asked: askedRows.map((m) => m.content),
     query,
-    answer: reply.answer
+    answer: reply.answer,
+    language
   });
-  return { ...reply, followUps, sessionId: session.id, botType, language };
+  // Remember what we showed so the next turn can carry it forward. Writing on
+  // a carried-forward turn too refreshes the TTL, so a chain of follow-ups
+  // ("link as well" → "and the images?") keeps working. Best-effort: a store
+  // hiccup must never fail the reply the visitor already has.
+  if (products.length) {
+    try {
+      await store().set(productKey, products, PRODUCT_CONTEXT_TTL_MS);
+    } catch (err) {
+      console.warn(`[tenantChat] product context write failed for tenant ${tenant.id}: ${err.message}`);
+    }
+  }
+
+  return { ...reply, followUps, sessionId: session.id, botType, language, products };
 }
 
-/**
- * Translate one already-written message into English or Hindi, for the
- * per-message "Translate" button in the widget. Deliberately stateless: it
- * runs no retrieval, loads no persona, writes no ChatMessage and touches no
- * session — so translating a reply never disturbs the ongoing conversation.
- * Shares the chat rate limiter so it can't be used to bypass the LLM budget.
- * @param {{ tenant: object, body: object }} args  body: { text, target: "en" | "hi" }
- * @returns {Promise<{ text: string, target: string }>}
- * @throws {ChatRequestError} invalid input (400), rate limiting (429) or LLM unavailable (503)
- */
-async function runTranslate({ tenant, body }) {
-  const text = String(body?.text || '').trim();
-  if (!text) throw new ChatRequestError('text is required', 400);
-  if (text.length > MAX_TRANSLATE_LEN) {
-    throw new ChatRequestError(`text must be ${MAX_TRANSLATE_LEN} characters or fewer`, 400);
+// A short, persona-appropriate lead-in used when we answer a product/listing
+// query from the catalog (the product cards carry the detail), in the active
+// language. Sales leans into value/urgency; Support stays warm and advisory.
+function catalogLeadIn(botType, language) {
+  const hi = language === 'hi';
+  if (botType === 'sales') {
+    return hi
+      ? 'ये रहे कुछ बेहतरीन विकल्प जो आपके लिए एकदम सही हैं — देखिए और आज ही अपना पसंदीदा चुनिए:'
+      : 'Here are some great options I’d genuinely recommend — take a look and grab the one that fits:';
   }
-  const target = normalizeLanguage(body?.target);
-  if (!target) throw new ChatRequestError('target must be one of: en, hi', 400);
-
-  if (await isTenantRateLimited(tenant.id)) {
-    throw new ChatRequestError('Too many requests. Please wait a few minutes and try again.', 429);
-  }
-
-  try {
-    const answer = await llmClient.generateAnswer({ systemPrompt: translationSystemPrompt(target), userPrompt: text });
-    return { text: answer.text.trim(), target };
-  } catch (err) {
-    // Same provider-chain failures the chat engine degrades on — surface a
-    // polite, retryable message rather than a raw upstream error.
-    throw new ChatRequestError('Translation is unavailable right now. Please try again in a few minutes.', 503);
-  }
+  return hi
+    ? 'यहाँ कुछ विकल्प हैं जो आपके लिए अच्छे रहेंगे — देखिए कौन-सा आपकी ज़रूरत के मुताबिक़ है:'
+    : 'Here are a few that could be a good fit for you — see which suits your needs best:';
 }
 
 // Express helper: run a turn and map input errors to their status codes.
@@ -207,24 +251,11 @@ async function handleChat(req, res, next) {
   }
 }
 
-// Express helper: translate one message, mapping input errors to status codes.
-async function handleTranslate(req, res, next) {
-  try {
-    res.json(await runTranslate({ tenant: req.tenant, body: req.body }));
-  } catch (err) {
-    if (err instanceof ChatRequestError) return res.status(err.statusCode).json({ error: err.message });
-    next(err);
-  }
-}
-
 module.exports = {
   runTenantChat,
   handleChat,
-  runTranslate,
-  handleTranslate,
   parseBotType,
   ChatRequestError,
   MAX_QUERY_LEN,
-  MAX_TRANSLATE_LEN,
   BOT_TYPES
 };

@@ -81,6 +81,27 @@ function smtpTransport(config) {
   return smtp.transport;
 }
 
+// Per-tenant SMTP transports (tenants that bring their own mail server —
+// services/tenantSmtp.js), pooled and keyed by their config. Bounded so a
+// large fleet can't grow this without limit; the least-recently-built one is
+// closed and dropped past the cap.
+const MAX_TENANT_TRANSPORTS = 50;
+const tenantTransports = new Map();
+function tenantTransport(config) {
+  const key = JSON.stringify(config);
+  let transport = tenantTransports.get(key);
+  if (!transport) {
+    if (tenantTransports.size >= MAX_TENANT_TRANSPORTS) {
+      const oldest = tenantTransports.keys().next().value;
+      tenantTransports.get(oldest)?.close?.();
+      tenantTransports.delete(oldest);
+    }
+    transport = nodemailer.createTransport({ ...config, pool: true, maxConnections: 2 });
+    tenantTransports.set(key, transport);
+  }
+  return transport;
+}
+
 
 // Production is either flag: Docker images set NODE_ENV=production, and a
 // deployment that forgot DEPLOY_ENV must still never print mail (reset codes)
@@ -151,16 +172,42 @@ function logFailure({ label, recipients, via, failure }) {
 /**
  * Never throws. Every failure is logged here, once, with its reason and a fix.
  * @param {{ to: string|string[], subject: string, text: string, html?: string,
- *           replyTo?: string, label?: string, devSummary?: string }} msg
+ *           replyTo?: string, label?: string, devSummary?: string, tenantId?: string }} msg
  *   label: what this email is, for the logs ("visitor confirmation, lead 123")
  *   devSummary: what to print in dev mode instead of the whole body
- * @returns {Promise<{ sent: boolean, via: 'smtp'|'resend'|'dev-log'|'none', simulated?: true,
+ *   tenantId: when set, send from this tenant's own SMTP if they have an
+ *     enabled one (services/tenantSmtp.js); otherwise the platform SMTP is used.
+ * @returns {Promise<{ sent: boolean, via: 'smtp'|'resend'|'tenant-smtp'|'dev-log'|'none', simulated?: true,
  *   reason?: string, transient?: boolean, error?: string }>}
  *   simulated: printed to the log in development, not delivered to anyone.
  */
-async function sendMail({ to, subject, text, html, replyTo, label, devSummary }) {
+async function sendMail({ to, subject, text, html, replyTo, label, devSummary, tenantId }) {
   const recipients = (Array.isArray(to) ? to : [to]).filter(Boolean);
   if (!recipients.length) return { sent: false, via: 'none', reason: 'no-recipient', transient: false, error: 'No recipient' };
+
+  // A tenant's own SMTP takes precedence when configured and enabled. If it
+  // isn't (no row, disabled, or its password can't be decrypted), override is
+  // null and we fall through to the platform transport below — the graceful
+  // fallback. A failure of a configured tenant transport is reported as-is and
+  // NOT silently retried via the platform, so a tenant's mail never goes out
+  // from the platform identity behind their back.
+  if (tenantId) {
+    let override = null;
+    try { override = await require('./tenantSmtp').resolveTenantTransport(tenantId); } catch { override = null; }
+    if (override) {
+      try {
+        await tenantTransport(override.config).sendMail({
+          from: override.from, to: recipients, subject, text, ...(html ? { html } : {}), ...(replyTo ? { replyTo } : {})
+        });
+        return { sent: true, via: 'tenant-smtp' };
+      } catch (err) {
+        const failure = classifyMailError(err);
+        logFailure({ label, recipients, via: 'tenant-smtp', failure });
+        return { sent: false, via: 'tenant-smtp', reason: failure.reason, transient: failure.transient, error: failure.detail };
+      }
+    }
+  }
+
   const transport = activeTransport();
 
   if (transport === 'smtp') {

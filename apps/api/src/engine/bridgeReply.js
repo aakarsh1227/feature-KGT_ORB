@@ -16,7 +16,11 @@ const { logUsage } = require('./usageTracking');
 const MIN_LEN = 40;
 const MAX_LEN = 480;
 const MAX_SENTENCES = 4;
-const OFFERS_FOLLOW_UP = /\b(?:our team|the team|a note|e-?mail|follow up|reach out|get in touch)\b/i;
+// English offer phrases, plus the Hindi equivalents a Hindi bridge reply uses
+// (team / email / contact / note) — Devanagari has no \b word boundary, so
+// those are matched directly. Without the Hindi side, a valid Hindi follow-up
+// offer would be rejected and the fixed fallback shown instead.
+const OFFERS_FOLLOW_UP = /\b(?:our team|the team|a note|e-?mail|follow up|reach out|get in touch)\b|(?:टीम|ईमेल|संपर्क|नोट)/i;
 const LOOKS_LIKE_AN_ANSWER = /\d|https?:|www\.|@|^\s*(?:[-*•]|step\b)|\bstep \w+:/im;
 // The bridge prompts ask the model to start a reply to an off-topic message
 // ("what's the capital of France?") with this: such a reply redirects kindly

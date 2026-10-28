@@ -156,7 +156,7 @@ async function send({ tenant, kind, mail, replyTo, now }) {
     return { sent: false, reason: 'no-recipient' };
   }
   await recordSend(tenant.id);
-  const result = await sendMail({ to, ...mail, replyTo, label: `${kind}, tenant ${tenant.slug || tenant.id}` });
+  const result = await sendMail({ to, ...mail, replyTo, tenantId: tenant.id, label: `${kind}, tenant ${tenant.slug || tenant.id}` });
   if (result.sent) console.log(`[alerts] ${kind} sent via ${result.via} to ${to.map(maskAddress).join(', ')} (tenant ${tenant.slug || tenant.id})`);
   return result;
 }

@@ -9,7 +9,10 @@ const { pdfToDocuments, PdfIngestError } = require('../services/shared/pdfIngest
 const { parseCategory, suggestCategory } = require('../services/shared/documentCategory');
 const { crawlConsentRecord, hostOf } = require('../services/shared/crawlConsent');
 const { createIpRateLimiter } = require('../utils/ipRateLimit');
-const { handleChat, handleTranslate } = require('../services/tenantChat');
+const { handleChat } = require('../services/tenantChat');
+const { getMaskedConfig, upsertConfig, testConfig, SmtpConfigError } = require('../services/tenantSmtp');
+const { ingestCatalogCsv, getCatalogSummary, listProducts, addProduct, updateProduct, deleteProduct, ProductError } = require('../services/catalogIngest');
+const { CsvCatalogError, catalogTemplateCsv, MAX_CSV_BYTES } = require('../services/shared/csvCatalog');
 const { scheduleFaqGeneration, isFaqGenerationRunning } = require('../services/tenantFaqs');
 const { usageBreakdowns } = require('../services/usageStats');
 const { wrapRouterAsync } = require('../utils/wrapAsync');
@@ -117,6 +120,10 @@ router.post('/documents', async (req, res) => {
 // botScope applied to every document created. Returns files[] so the client
 // can show which files in a zip were skipped and why.
 const fileUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: MAX_UPLOAD_BYTES, files: 1, fields: 3 } });
+
+// Product catalog CSV upload. Small, single file, memory only. The extension
+// is checked here; the content is validated by the parser (services/shared/csvCatalog.js).
+const catalogUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: MAX_CSV_BYTES, files: 1, fields: 2 } });
 
 router.post('/documents/file', (req, res, next) => fileUpload.single('file')(req, res, (err) => {
   if (!err) return next();
@@ -315,10 +322,98 @@ router.get('/faqs', async (req, res) => {
     status,
     supportFaqs: row?.supportFaqs || [],
     salesFaqs: row?.salesFaqs || [],
+    // Hindi variants (index-aligned); the dashboard shows these when its
+    // language toggle is on Hindi (components/workspace/BotSandbox.js).
+    supportFaqsHi: row?.supportFaqsHi || [],
+    salesFaqsHi: row?.salesFaqsHi || [],
     generatedAt: row?.generatedAt || null,
     // The failure reason names providers and config: staff only.
     ...(req.actor === 'operator' && row?.error ? { error: row.error } : {})
   });
+});
+
+// ── Product catalog: a CSV of products stored as structured, tenant-scoped
+// rows plus a readable document the bots answer price/product questions from
+// (services/catalogIngest.js). Strictly scoped to req.tenant.id.
+router.get('/catalog', async (req, res) => {
+  res.json(await getCatalogSummary(req.tenant.id));
+});
+
+// Per-item CRUD for the editable catalog table. All tenant-scoped; the
+// catalog document the RAG reads is rebuilt after every change.
+router.get('/catalog/products', async (req, res) => {
+  res.json({ products: await listProducts(req.tenant.id) });
+});
+
+router.post('/catalog/products', async (req, res, next) => {
+  try { res.status(201).json(await addProduct(req.tenant.id, req.body)); }
+  catch (e) { if (e instanceof ProductError) return res.status(e.statusCode).json({ error: e.message }); next(e); }
+});
+
+router.patch('/catalog/products/:id', async (req, res, next) => {
+  try { res.json(await updateProduct(req.tenant.id, req.params.id, req.body)); }
+  catch (e) { if (e instanceof ProductError) return res.status(e.statusCode).json({ error: e.message }); next(e); }
+});
+
+router.delete('/catalog/products/:id', async (req, res, next) => {
+  try { res.json(await deleteProduct(req.tenant.id, req.params.id)); }
+  catch (e) { if (e instanceof ProductError) return res.status(e.statusCode).json({ error: e.message }); next(e); }
+});
+
+// A blank CSV template so tenants structure their catalog correctly.
+router.get('/catalog/template', (req, res) => {
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', 'attachment; filename="product-catalog-template.csv"');
+  res.send(catalogTemplateCsv());
+});
+
+router.post('/catalog', (req, res, next) => catalogUpload.single('file')(req, res, (err) => {
+  if (!err) return next();
+  if (err instanceof multer.MulterError) {
+    return res.status(err.code === 'LIMIT_FILE_SIZE' ? 413 : 400).json({
+      error: err.code === 'LIMIT_FILE_SIZE' ? `Catalog files are limited to ${MAX_CSV_BYTES / (1024 * 1024)}MB` : 'Upload exactly one file in a field named "file"'
+    });
+  }
+  next(err);
+}), async (req, res, next) => {
+  if (!req.file) return res.status(400).json({ error: 'Attach a .csv file in a field named "file"' });
+  if (!/\.csv$/i.test(req.file.originalname || '')) {
+    return res.status(415).json({ error: 'Product catalogs must be a .csv file.' });
+  }
+  try {
+    const result = await ingestCatalogCsv(req.tenant.id, req.file.buffer.toString('utf8'));
+    res.status(201).json({ fileName: req.file.originalname, ...result });
+  } catch (e) {
+    if (e instanceof CsvCatalogError) return res.status(e.statusCode).json({ error: e.message });
+    next(e);
+  }
+});
+
+// ── Custom SMTP: a tenant's own mail server for ticket alerts, lead emails
+// and notifications (services/tenantSmtp.js, services/mailer.js). The
+// password is encrypted at rest and never returned — GET masks it.
+router.get('/smtp-config', async (req, res) => {
+  res.json(await getMaskedConfig(req.tenant.id));
+});
+
+router.put('/smtp-config', async (req, res, next) => {
+  try {
+    res.json(await upsertConfig(req.tenant.id, req.body));
+  } catch (err) {
+    if (err instanceof SmtpConfigError) return res.status(err.statusCode).json({ error: err.message });
+    next(err);
+  }
+});
+
+// Verifies credentials against the mail server without saving. Returns
+// { ok, reason?, error?, hint? }; a bad login is a 200 with ok:false (it's a
+// validation result, not a server error).
+router.post('/smtp-config/test', async (req, res, next) => {
+  try {
+    res.json(await testConfig(req.tenant.id, req.body));
+  } catch (err) {
+    next(err);
+  }
 });
 
 router.post('/faqs/regenerate', async (req, res) => {
@@ -428,11 +523,6 @@ router.delete('/api-keys/:keyId', async (req, res) => {
 // ── Test chat: the tenant's own bots, authenticated by the session instead
 // of an API key (keys are stored hashed and can't be read back).
 router.post('/chat', handleChat);
-
-// Per-message translation for the Test bots chat, mirroring the embed
-// widget's translate button. Stateless (services/tenantChat.js runTranslate):
-// no session touched, so translating a reply never resets the test chat.
-router.post('/translate', handleTranslate);
 
 // ── Tickets and usage
 
